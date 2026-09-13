@@ -1,0 +1,113 @@
+@page "/inscription"
+@inject HttpClient Http
+@inject NavigationManager Navigation
+
+<PageTitle>Inscription - ImmoPlus</PageTitle>
+
+<div class="bg-immo-dark px-6 py-3 flex justify-end">
+    <NavLink href="" class="text-immo-cream text-sm border border-gray-600 px-4 py-2 rounded">
+        ← Retour à l'accueil
+    </NavLink>
+</div>
+
+<div class="min-h-screen bg-white flex items-center justify-center px-6 py-12">
+    <div class="flex flex-col md:flex-row max-w-4xl w-full rounded-lg overflow-hidden shadow-lg">
+
+        <div class="bg-immo-dark text-immo-cream p-10 md:w-1/2 flex flex-col justify-center gap-8">
+            <div>
+                <h2 class="text-immo-gold text-2xl font-bold mb-1">ImmoPlus</h2>
+                <p class="text-gray-400 text-sm">La plateforme immobilière de référence</p>
+            </div>
+
+            <div class="flex gap-3">
+                <div class="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 mt-1">
+                    <span class="w-2 h-2 bg-immo-gold rounded-full"></span>
+                </div>
+                <div>
+                    <p class="font-semibold">Un compte, trois rôles</p>
+                    <p class="text-gray-400 text-sm">Locataire, Bailleur ou Admin selon votre usage de la plateforme.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="p-10 md:w-1/2 flex flex-col justify-center bg-white">
+            <h2 class="text-2xl font-bold mb-1">Créer un compte</h2>
+            <p class="text-gray-500 text-sm mb-6">Rejoignez ImmoPlus en quelques secondes</p>
+
+            <EditForm Model="@modele" OnValidSubmit="SInscrire">
+                <label class="text-sm font-medium text-gray-700">Nom complet</label>
+                <InputText @bind-Value="modele.Nom" placeholder="Mamadou Diallo"
+                           class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm" />
+
+                <label class="text-sm font-medium text-gray-700">Téléphone</label>
+                <InputText @bind-Value="modele.Telephone" placeholder="+224 6 00 00 00 00"
+                           class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm" />
+
+                <label class="text-sm font-medium text-gray-700">Adresse email</label>
+                <InputText @bind-Value="modele.Email" placeholder="jean@example.com"
+                           class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm" />
+
+                <label class="text-sm font-medium text-gray-700">Mot de passe</label>
+                <InputText type="password" @bind-Value="modele.MotDePasse"
+                           class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm" />
+
+                <label class="text-sm font-medium text-gray-700">Je suis</label>
+                <InputSelect @bind-Value="modele.Role"
+                             class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm bg-white">
+                    <option value="">-- Choisir un rôle --</option>
+                    <option value="Locataire">Locataire</option>
+                    <option value="Bailleur">Bailleur</option>
+                    <option value="Admin">Admin</option>
+                </InputSelect>
+
+                <button type="submit"
+                        class="w-full bg-immo-gold text-immo-dark font-semibold py-3 rounded hover:opacity-90">
+                    Créer mon compte
+                </button>
+            </EditForm>
+
+            @if (!string.IsNullOrEmpty(message))
+            {
+                <p class="@(succes ? "text-green-600" : "text-red-600") text-sm mt-4">@message</p>
+            }
+
+            <div class="border-t mt-6 pt-4 text-center text-sm">
+                Déjà un compte ?
+                <NavLink href="login" class="text-immo-gold font-semibold">Se connecter</NavLink>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+@code {
+    private InscriptionModele modele = new();
+    private string? message;
+    private bool succes;
+
+    private async Task SInscrire()
+    {
+        try
+        {
+            var reponse = await Http.PostAsJsonAsync("utilisateur/inscription", modele);
+
+            if (reponse.IsSuccessStatusCode)
+            {
+                succes = true;
+                message = "Inscription réussie ! Vous pouvez vous connecter.";
+                modele = new();
+            }
+            else
+            {
+                succes = false;
+                var erreur = await reponse.Content.ReadAsStringAsync();
+                message = $"Erreur : {erreur}";
+            }
+        }
+        catch (Exception ex)
+        {
+            succes = false;
+            message = $"Erreur : {ex.Message}";
+        }
+    }
+}

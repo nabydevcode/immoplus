@@ -1,0 +1,75 @@
+@implements IDisposable
+@inject AuthServices AuthSvc
+@inject NavigationManager Navigation
+
+<header class="bg-immo-dark px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-8">
+        <a href="/" class="text-immo-gold font-bold text-xl">ImmoPlus</a>
+        <nav class="hidden md:flex items-center gap-6">
+            <NavLink href="" Match="NavLinkMatch.All" class="text-immo-cream hover:text-immo-gold text-sm">Accueil
+            </NavLink>
+            <NavLink href="annonces/longue-duree" class="text-immo-cream hover:text-immo-gold text-sm">Location longue durée</NavLink>
+            <NavLink href="annonces/sejour-court" class="text-immo-cream hover:text-immo-gold text-sm">Séjours courts</NavLink>
+        </nav>
+    </div>
+
+    <div class="flex items-center gap-3">
+        @if (AuthSvc.EstConnecte)
+        {
+            <details class="relative">
+                <summary class="list-none cursor-pointer text-immo-cream text-sm border border-gray-600 px-4 py-2 rounded flex items-center gap-2">
+                    Mon espace <span class="text-gray-400">(@AuthSvc.RoleUtilisateur)</span>
+                </summary>
+                <div class="absolute right-0 mt-2 w-60 bg-white rounded shadow-lg py-2 z-10 text-immo-dark">
+                    <p class="px-4 py-2 text-xs text-gray-400 border-b truncate">Connecté : @AuthSvc.NomUtilisateur</p>
+                    <NavLink href="candidatures" class="block px-4 py-2 text-sm hover:bg-immo-cream">Candidatures</NavLink>
+                    <NavLink href="reservations" class="block px-4 py-2 text-sm hover:bg-immo-cream">Réservations</NavLink>
+                    @if (AuthSvc.RoleUtilisateur is "Bailleur" or "Admin")
+                    {
+                        <NavLink href="appartement/ajouter" class="block px-4 py-2 text-sm hover:bg-immo-cream">Ajouter un appartement</NavLink>
+                    }
+                    @if (AuthSvc.RoleUtilisateur == "Admin")
+                    {
+                        <NavLink href="utilisateurs" class="block px-4 py-2 text-sm hover:bg-immo-cream">Utilisateurs</NavLink>
+                    }
+                    <button @onclick="SeDeconnecter"
+                            class="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-immo-cream border-t">
+                        Déconnexion
+                    </button>
+                </div>
+            </details>
+        }
+        else
+        {
+            <NavLink href="login"
+                     class="border border-immo-cream text-immo-cream text-sm px-4 py-2 rounded hover:border-immo-gold hover:text-immo-gold">
+                Connexion
+            </NavLink>
+            <NavLink href="inscription"
+                     class="bg-immo-gold text-immo-dark text-sm font-semibold px-4 py-2 rounded hover:opacity-90">
+                S'inscrire gratuitement
+            </NavLink>
+        }
+    </div>
+</header>
+
+@code {
+    protected override async Task OnInitializedAsync()
+    {
+        AuthSvc.OnChange += RafraichirEtat;
+        await AuthSvc.ChargerTokenAsync();
+    }
+
+    private void RafraichirEtat() => InvokeAsync(StateHasChanged);
+
+    private async Task SeDeconnecter()
+    {
+        await AuthSvc.DeconnexionAsync();
+        Navigation.NavigateTo("/");
+    }
+
+    public void Dispose()
+    {
+        AuthSvc.OnChange -= RafraichirEtat;
+    }
+}

@@ -1,0 +1,121 @@
+@page "/candidatures"
+@inject HttpClient Http
+@inject AuthServices AuthSvc
+
+<PageTitle>Candidatures - ImmoPlus</PageTitle>
+
+<div class="bg-immo-cream min-h-screen px-6 py-8">
+    <h1 class="text-2xl font-bold mb-1">@Titre</h1>
+    <p class="text-gray-500 text-sm mb-6">@SousTitre</p>
+
+    @if (chargement)
+    {
+        <p>Chargement...</p>
+    }
+    else if (erreur is not null)
+    {
+        <p class="text-red-600">@erreur</p>
+    }
+    else if (candidatures is not null && candidatures.Count > 0)
+    {
+        <div class="bg-white rounded shadow overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="bg-immo-dark text-immo-cream text-left">
+                        <th class="px-4 py-3">Appartement</th>
+                        <th class="px-4 py-3">Candidat</th>
+                        <th class="px-4 py-3">Apport</th>
+                        <th class="px-4 py-3">Situation</th>
+                        <th class="px-4 py-3">Garant</th>
+                        <th class="px-4 py-3">Soumise le</th>
+                        <th class="px-4 py-3">Statut</th>
+                        <th class="px-4 py-3"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var c in candidatures)
+                    {
+                        <tr class="border-b last:border-0">
+                            <td class="px-4 py-3 font-medium">@c.AppartementAdresse</td>
+                            <td class="px-4 py-3 text-gray-600">@c.LocataireNom</td>
+                            <td class="px-4 py-3 text-gray-600">@c.ApportInitial.ToString("N0") GNF</td>
+                            <td class="px-4 py-3 text-gray-600">@c.SituationProfessionnelle</td>
+                            <td class="px-4 py-3 text-gray-600">@(c.Garant is not null ? "Oui" : "-")</td>
+                            <td class="px-4 py-3 text-gray-600">@c.DateSoumission.ToShortDateString()</td>
+                            <td class="px-4 py-3">
+                                <span class="@ClasseBadge(c.Statut) text-xs px-3 py-1 rounded-full">@c.Statut</span>
+                            </td>
+                            <td class="px-4 py-3">
+                                <NavLink href="@($"candidature/{c.Id}")" class="text-immo-gold font-semibold">Voir →</NavLink>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <p>Aucune candidature trouvée.</p>
+    }
+</div>
+
+@code {
+    private List<CandidatureDto>? candidatures;
+    private bool chargement = true;
+    private string? erreur;
+
+    private string Titre => AuthSvc.RoleUtilisateur switch
+    {
+        "Locataire" => "Mes candidatures",
+        "Bailleur" => "Candidatures reçues",
+        _ => "Toutes les candidatures"
+    };
+
+    private string SousTitre => AuthSvc.RoleUtilisateur switch
+    {
+        "Locataire" => "Suivez l'état de vos candidatures pour une location longue durée.",
+        "Bailleur" => "Examinez les candidatures reçues sur vos annonces.",
+        _ => "Vue d'ensemble de toutes les candidatures de la plateforme."
+    };
+
+    private static string ClasseBadge(string statut) => statut switch
+    {
+        "Acceptee" => "bg-green-100 text-green-700",
+        "Refusee" => "bg-red-100 text-red-700",
+        _ => "bg-immo-dark/10 text-immo-dark"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var connecte = await AuthSvc.ChargerTokenAsync();
+        if (!connecte)
+        {
+            erreur = "Vous devez être connecté.";
+            chargement = false;
+            return;
+        }
+
+        try
+        {
+            var reponse = await Http.GetAsync("candidature/lister?page=1&taille=50");
+            if (reponse.IsSuccessStatusCode)
+            {
+                var resultat = await reponse.Content.ReadFromJsonAsync<PagedResultDto<CandidatureDto>>();
+                candidatures = resultat?.Donnees;
+            }
+            else
+            {
+                erreur = $"Erreur {(int)reponse.StatusCode} lors du chargement.";
+            }
+        }
+        catch (Exception ex)
+        {
+            erreur = $"Erreur : {ex.Message}";
+        }
+        finally
+        {
+            chargement = false;
+        }
+    }
+}

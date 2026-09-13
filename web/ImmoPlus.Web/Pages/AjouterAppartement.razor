@@ -1,0 +1,126 @@
+@page "/appartement/ajouter"
+@inject HttpClient Http
+@inject AuthServices AuthSvc
+
+<PageTitle>Ajouter un appartement - ImmoPlus</PageTitle>
+
+<div class="bg-immo-cream min-h-screen px-6 py-8 flex justify-center">
+    <div class="bg-white rounded shadow p-8 w-full max-w-xl h-fit">
+        <h1 class="text-2xl font-bold mb-1">Ajouter un appartement</h1>
+        <p class="text-gray-500 text-sm mb-6">Publiez une nouvelle annonce en tant que bailleur.</p>
+
+        @if (!AuthSvc.EstConnecte)
+        {
+            <p class="text-red-600 text-sm mb-4">Vous devez être connecté en tant que Bailleur ou Admin.</p>
+            <NavLink href="login" class="text-immo-gold font-semibold text-sm">Se connecter →</NavLink>
+        }
+        else if (AuthSvc.RoleUtilisateur is not ("Bailleur" or "Admin"))
+        {
+            <p class="text-red-600 text-sm">Seuls les bailleurs et administrateurs peuvent publier une annonce.</p>
+        }
+        else
+        {
+            <EditForm Model="@modele" OnValidSubmit="Ajouter">
+                @if (AuthSvc.RoleUtilisateur == "Bailleur")
+                {
+                    <p class="w-full border border-gray-200 bg-gray-50 rounded px-4 py-3 mt-1 mb-4 text-sm text-gray-600">
+                        Bailleur : <strong>@AuthSvc.NomUtilisateur</strong>
+                    </p>
+                }
+                else
+                {
+                    <label class="text-sm font-medium text-gray-700">ID Bailleur</label>
+                    <InputNumber @bind-Value="modele.BailleurId"
+                                 class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm" />
+                }
+
+                <label class="text-sm font-medium text-gray-700">Type d'offre</label>
+                <InputSelect @bind-Value="modele.TypeOffre"
+                             class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm bg-white">
+                    <option value="LongueDuree">Location longue durée</option>
+                    <option value="SejourCourt">Séjour court</option>
+                </InputSelect>
+
+                <label class="text-sm font-medium text-gray-700">Adresse</label>
+                <InputText @bind-Value="modele.Adresse" placeholder="Quartier, ville..."
+                           class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm" />
+
+                @if (modele.TypeOffre == "LongueDuree")
+                {
+                    <label class="text-sm font-medium text-gray-700">Loyer mensuel (GNF)</label>
+                    <InputNumber @bind-Value="modele.LoyerMensuel"
+                                 class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm" />
+
+                    <label class="text-sm font-medium text-gray-700">Durée d'avance exigée (mois)</label>
+                    <InputNumber @bind-Value="modele.DureeAvanceExigee"
+                                 class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm" />
+                }
+                else
+                {
+                    <label class="text-sm font-medium text-gray-700">Prix par nuit (GNF)</label>
+                    <InputNumber @bind-Value="modele.PrixParNuit"
+                                 class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm" />
+
+                    <label class="text-sm font-medium text-gray-700">Durée maximale (mois)</label>
+                    <InputNumber @bind-Value="modele.DureeMaxMois"
+                                 class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm" />
+                }
+
+                <label class="text-sm font-medium text-gray-700">Description</label>
+                <InputText @bind-Value="modele.Description" placeholder="Studio meublé, proche université..."
+                           class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm" />
+
+                <button type="submit"
+                        class="w-full bg-immo-gold text-immo-dark font-semibold py-3 rounded hover:opacity-90">
+                    Publier l'annonce
+                </button>
+            </EditForm>
+
+            @if (!string.IsNullOrEmpty(message))
+            {
+                <p class="@(succes ? "text-green-600" : "text-red-600") text-sm mt-4">@message</p>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    private AppartementModele modele = new();
+    private string? message;
+    private bool succes;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var connecte = await AuthSvc.ChargerTokenAsync();
+        if (connecte && AuthSvc.RoleUtilisateur == "Bailleur" && AuthSvc.UtilisateurId is not null)
+        {
+            modele.BailleurId = AuthSvc.UtilisateurId.Value;
+        }
+    }
+
+    private async Task Ajouter()
+    {
+        try
+        {
+            var reponse = await Http.PostAsJsonAsync("appartement/ajouter", modele);
+
+            if (reponse.IsSuccessStatusCode)
+            {
+                succes = true;
+                message = "Appartement ajouté avec succès !";
+                var bailleurId = modele.BailleurId;
+                modele = new() { BailleurId = bailleurId };
+            }
+            else
+            {
+                succes = false;
+                message = $"Erreur {(int)reponse.StatusCode} : {await reponse.Content.ReadAsStringAsync()}";
+            }
+        }
+        catch (Exception ex)
+        {
+            succes = false;
+            message = $"Erreur : {ex.Message}";
+        }
+    }
+}

@@ -1,0 +1,154 @@
+@page "/annonces/{Type}/{Id:int}"
+@inject HttpClient Http
+@inject AuthServices AuthSvc
+
+<PageTitle>Détail de l'annonce - ImmoPlus</PageTitle>
+
+@if (chargement)
+{
+    <p class="p-6">Chargement...</p>
+}
+else if (appartement is null)
+{
+    <p class="p-6 text-red-600">Appartement introuvable.</p>
+}
+else
+{
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-2 p-6 bg-immo-cream">
+        <div class="md:col-span-2 bg-gray-200 h-64 md:h-96 rounded"></div>
+        <div class="bg-gray-200 h-32 md:h-[11.5rem] rounded"></div>
+        <div class="bg-gray-200 h-32 md:h-[11.5rem] rounded"></div>
+        <div class="bg-gray-200 h-32 md:h-[11.5rem] rounded md:col-start-3"></div>
+        <div class="bg-gray-200 h-32 md:h-[11.5rem] rounded"></div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 px-6 pb-12 bg-immo-cream">
+        <div class="md:col-span-2">
+            <div class="flex justify-between items-start mb-1">
+                <h1 class="text-2xl font-bold">@appartement.Description</h1>
+                <div class="text-right">
+                    @if (EstLongueDuree)
+                    {
+                        <p class="text-immo-gold text-2xl font-bold">@appartement.LoyerMensuel?.ToString("N0")</p>
+                        <p class="text-gray-500 text-sm">GNF / mois</p>
+                    }
+                    else
+                    {
+                        <p class="text-immo-gold text-2xl font-bold">@appartement.PrixParNuit?.ToString("N0")</p>
+                        <p class="text-gray-500 text-sm">GNF / nuit</p>
+                    }
+                </div>
+            </div>
+            <p class="text-gray-500 mb-4">@appartement.Adresse</p>
+
+            <div class="flex flex-wrap gap-2 mb-6">
+                @if (appartement.Disponible)
+                {
+                    <span class="bg-green-100 text-green-700 text-xs px-3 py-1 rounded-full">Disponible</span>
+                }
+                else
+                {
+                    <span class="bg-red-100 text-red-700 text-xs px-3 py-1 rounded-full">Non disponible</span>
+                }
+                @if (EstLongueDuree)
+                {
+                    <span class="bg-immo-dark/10 text-xs px-3 py-1 rounded-full">Avance : @appartement.DureeAvanceExigee mois</span>
+                }
+                else
+                {
+                    <span class="bg-immo-dark/10 text-xs px-3 py-1 rounded-full">Séjour max : @appartement.DureeMaxMois mois</span>
+                }
+            </div>
+
+            <hr class="mb-6" />
+            <p class="text-gray-700 leading-relaxed">@appartement.Description</p>
+        </div>
+
+        <div class="bg-white rounded p-6 h-fit shadow">
+            @if (EstLongueDuree)
+            {
+                <h3 class="font-bold mb-1">Intéressé par ce bien ?</h3>
+                <p class="text-gray-500 text-sm mb-4">
+                    Envoyez votre candidature (situation professionnelle, garant si besoin, documents).
+                    Le bailleur l'examinera avant validation.
+                </p>
+
+                @if (!appartement.Disponible)
+                {
+                    <p class="text-sm text-gray-500">Cet appartement n'est plus disponible.</p>
+                }
+                else if (!AuthSvc.EstConnecte)
+                {
+                    <NavLink href="login" class="block text-center bg-immo-gold text-immo-dark font-semibold py-3 rounded">
+                        Se connecter pour candidater
+                    </NavLink>
+                }
+                else if (AuthSvc.RoleUtilisateur != "Locataire")
+                {
+                    <p class="text-sm text-gray-500">Seul un compte Locataire peut candidater.</p>
+                }
+                else
+                {
+                    <NavLink href="@($"annonces/{Type}/{Id}/candidater")"
+                             class="block text-center bg-immo-gold text-immo-dark font-semibold py-3 rounded">
+                        Candidater
+                    </NavLink>
+                }
+            }
+            else
+            {
+                <h3 class="font-bold mb-1">Réserver ce séjour</h3>
+                <p class="text-gray-500 text-sm mb-4">
+                    Choisissez vos dates et réglez directement en ligne, sans dossier.
+                </p>
+
+                @if (!appartement.Disponible)
+                {
+                    <p class="text-sm text-gray-500">Ce logement n'est plus disponible.</p>
+                }
+                else if (!AuthSvc.EstConnecte)
+                {
+                    <NavLink href="login" class="block text-center bg-immo-gold text-immo-dark font-semibold py-3 rounded">
+                        Se connecter pour réserver
+                    </NavLink>
+                }
+                else
+                {
+                    <NavLink href="@($"annonces/{Type}/{Id}/reserver")"
+                             class="block text-center bg-immo-gold text-immo-dark font-semibold py-3 rounded">
+                        Réserver
+                    </NavLink>
+                }
+            }
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string Type { get; set; } = "longue-duree";
+    [Parameter] public int Id { get; set; }
+
+    private AppartementDto? appartement;
+    private bool chargement = true;
+
+    private bool EstLongueDuree => Type == "longue-duree";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AuthSvc.ChargerTokenAsync();
+        try
+        {
+            var reponse = await Http.GetAsync("appartement/lister");
+            if (reponse.IsSuccessStatusCode)
+            {
+                var liste = await reponse.Content.ReadFromJsonAsync<List<AppartementDto>>();
+                appartement = liste?.FirstOrDefault(a => a.Id == Id);
+            }
+        }
+        catch { }
+        finally
+        {
+            chargement = false;
+        }
+    }
+}

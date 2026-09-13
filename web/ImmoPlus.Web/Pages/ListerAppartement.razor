@@ -1,0 +1,110 @@
+@page "/annonces/{Type}"
+@inject HttpClient Http
+
+<PageTitle>@Titre - ImmoPlus</PageTitle>
+
+<div class="bg-immo-cream min-h-screen px-6 py-8">
+    <div class="flex gap-3 mb-6">
+        <NavLink href="annonces/longue-duree"
+                 class="@($"{(EstLongueDuree ? "bg-immo-dark text-white" : "bg-white")} px-4 py-2 rounded text-sm font-semibold")">
+            Location longue durée
+        </NavLink>
+        <NavLink href="annonces/sejour-court"
+                 class="@($"{(!EstLongueDuree ? "bg-immo-dark text-white" : "bg-white")} px-4 py-2 rounded text-sm font-semibold")">
+            Séjours courts
+        </NavLink>
+    </div>
+
+    <h1 class="text-2xl font-bold mb-1">@Titre</h1>
+    <p class="text-gray-500 text-sm mb-6">
+        @(appartements?.Count ?? 0) annonce(s) disponible(s)
+    </p>
+
+    @if (chargement)
+    {
+        <p>Chargement...</p>
+    }
+    else if (erreur is not null)
+    {
+        <p class="text-red-600">@erreur</p>
+    }
+    else if (appartements is not null && appartements.Count > 0)
+    {
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            @foreach (var a in appartements)
+            {
+                <div class="bg-white rounded overflow-hidden shadow">
+                    <div class="bg-gray-200 h-36"></div>
+                    <div class="p-4">
+                        <span class="inline-block bg-immo-dark text-white text-xs px-2 py-1 rounded mb-2">
+                            @if (EstLongueDuree)
+                            {
+                                @($"{a.LoyerMensuel?.ToString("N0")} GNF/mois")
+                            }
+                            else
+                            {
+                                @($"{a.PrixParNuit?.ToString("N0")} GNF/nuit")
+                            }
+                        </span>
+                        <div class="flex justify-between items-start">
+                            <div>
+                                <p class="font-semibold">@a.Description</p>
+                                <p class="text-gray-500 text-sm">@a.Adresse</p>
+                            </div>
+                            @if (a.Disponible)
+                            {
+                                <span class="bg-green-100 text-green-700 text-xs px-2 py-1 rounded">Disponible</span>
+                            }
+                        </div>
+                        <NavLink href="@($"annonces/{Type}/{a.Id}")"
+                                 class="block mt-3 bg-immo-gold text-center text-immo-dark text-sm font-semibold py-2 rounded">
+                            Voir l'annonce
+                        </NavLink>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+    else
+    {
+        <p>Aucune annonce trouvée.</p>
+    }
+</div>
+
+@code {
+    [Parameter] public string Type { get; set; } = "longue-duree";
+
+    private List<AppartementDto>? appartements;
+    private bool chargement = true;
+    private string? erreur;
+
+    private bool EstLongueDuree => Type == "longue-duree";
+    private string Titre => EstLongueDuree ? "Location longue durée" : "Séjours courts";
+    private string TypeOffreApi => EstLongueDuree ? "LongueDuree" : "SejourCourt";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        chargement = true;
+        erreur = null;
+        try
+        {
+            var reponse = await Http.GetAsync($"appartement/lister?typeOffre={TypeOffreApi}");
+            if (reponse.IsSuccessStatusCode)
+            {
+                appartements = await reponse.Content.ReadFromJsonAsync<List<AppartementDto>>();
+            }
+            else
+            {
+                erreur = "Impossible de charger les annonces pour le moment.";
+            }
+        }
+        catch (Exception ex)
+        {
+            erreur = $"Erreur : {ex.Message}";
+        }
+        finally
+        {
+            chargement = false;
+        }
+    }
+}

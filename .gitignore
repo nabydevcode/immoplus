@@ -1,0 +1,23 @@
+# .NET
+bin/
+obj/
+*.user
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# Uploaded documents (local storage)
+api/ImmoPlus.Api/Storage/documents/*
+!api/ImmoPlus.Api/Storage/documents/.gitkeep
+
+# Node / Tailwind
+node_modules/
+web/ImmoPlus.Web/wwwroot/css/tailwind-output.css
+
+# IDE
+.vs/
+.vscode/
+*.swp
+.DS_Store

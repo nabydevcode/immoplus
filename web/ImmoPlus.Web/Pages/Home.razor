@@ -1,0 +1,55 @@
+@page "/"
+
+<PageTitle>ImmoPlus - Accueil</PageTitle>
+
+<section class="bg-immo-dark px-6 py-16">
+    <div class="max-w-3xl">
+        <span class="inline-block bg-immo-gold/20 text-immo-gold text-xs font-semibold px-3 py-1 rounded-full mb-4">
+            Plateforme immobilière de confiance
+        </span>
+        <h1 class="text-immo-cream text-4xl font-bold mb-4">
+            Trouvez votre logement idéal, longue durée ou séjour court
+        </h1>
+        <p class="text-gray-400 mb-8">
+            Location longue durée avec dossier de candidature et financement d'avance de loyer, ou séjour court
+            meublé façon réservation directe — deux parcours pensés pour vos besoins.
+        </p>
+
+        <div class="flex flex-wrap gap-4">
+            <NavLink href="annonces/longue-duree"
+                     class="bg-immo-gold text-immo-dark font-semibold px-6 py-3 rounded hover:opacity-90">
+                Location longue durée
+            </NavLink>
+            <NavLink href="annonces/sejour-court"
+                     class="border border-immo-cream text-immo-cream font-semibold px-6 py-3 rounded hover:border-immo-gold hover:text-immo-gold">
+                Séjours courts
+            </NavLink>
+        </div>
+    </div>
+</section>
+
+<section class="bg-immo-cream px-6 py-12">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl">
+        <div class="bg-white rounded p-6 shadow">
+            <h2 class="font-bold text-lg mb-2">Location longue durée</h2>
+            <p class="text-gray-600 text-sm mb-4">
+                Bail classique. Vous candidatez avec votre dossier (situation professionnelle, garant si besoin,
+                documents), le bailleur examine votre candidature, puis un financement d'avance de loyer est
+                proposé si votre apport est insuffisant.
+            </p>
+            <NavLink href="annonces/longue-duree" class="text-immo-gold font-semibold text-sm">
+                Voir les annonces →
+            </NavLink>
+        </div>
+        <div class="bg-white rounded p-6 shadow">
+            <h2 class="font-bold text-lg mb-2">Séjour court</h2>
+            <p class="text-gray-600 text-sm mb-4">
+                Logement meublé pour un mois maximum, renouvelable. Réservation directe et rapide,
+                sans dossier de candidature — vous choisissez vos dates et réglez à la réservation.
+            </p>
+            <NavLink href="annonces/sejour-court" class="text-immo-gold font-semibold text-sm">
+                Voir les annonces →
+            </NavLink>
+        </div>
+    </div>
+</section>

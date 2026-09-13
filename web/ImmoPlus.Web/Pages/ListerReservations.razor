@@ -1,0 +1,106 @@
+@page "/reservations"
+@inject HttpClient Http
+@inject AuthServices AuthSvc
+
+<PageTitle>Réservations - ImmoPlus</PageTitle>
+
+<div class="bg-immo-cream min-h-screen px-6 py-8">
+    <h1 class="text-2xl font-bold mb-1">Réservations</h1>
+    <p class="text-gray-500 text-sm mb-6">Séjours courts réservés sur la plateforme.</p>
+
+    @if (chargement)
+    {
+        <p>Chargement...</p>
+    }
+    else if (erreur is not null)
+    {
+        <p class="text-red-600">@erreur</p>
+    }
+    else if (reservations is not null && reservations.Count > 0)
+    {
+        <div class="bg-white rounded shadow overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="bg-immo-dark text-immo-cream text-left">
+                        <th class="px-4 py-3">Logement</th>
+                        <th class="px-4 py-3">Locataire</th>
+                        <th class="px-4 py-3">Arrivée</th>
+                        <th class="px-4 py-3">Départ</th>
+                        <th class="px-4 py-3">Montant</th>
+                        <th class="px-4 py-3">Payé</th>
+                        <th class="px-4 py-3">Statut</th>
+                        <th class="px-4 py-3"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in reservations)
+                    {
+                        <tr class="border-b last:border-0">
+                            <td class="px-4 py-3 font-medium">@r.AppartementAdresse</td>
+                            <td class="px-4 py-3 text-gray-600">@r.LocataireNom</td>
+                            <td class="px-4 py-3 text-gray-600">@r.DateArrivee.ToShortDateString()</td>
+                            <td class="px-4 py-3 text-gray-600">@r.DateDepart.ToShortDateString()</td>
+                            <td class="px-4 py-3 text-gray-600">@r.MontantTotal.ToString("N0") GNF</td>
+                            <td class="px-4 py-3 text-gray-600">@r.MontantPaye.ToString("N0") GNF</td>
+                            <td class="px-4 py-3">
+                                <span class="@ClasseBadge(r.Statut) text-xs px-3 py-1 rounded-full">@r.Statut</span>
+                            </td>
+                            <td class="px-4 py-3">
+                                <NavLink href="@($"reservation/{r.Id}")" class="text-immo-gold font-semibold">Voir →</NavLink>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <p>Aucune réservation trouvée.</p>
+    }
+</div>
+
+@code {
+    private List<ReservationDto>? reservations;
+    private bool chargement = true;
+    private string? erreur;
+
+    private static string ClasseBadge(string statut) => statut switch
+    {
+        "Confirmee" => "bg-green-100 text-green-700",
+        "Annulee" => "bg-red-100 text-red-700",
+        _ => "bg-immo-dark/10 text-immo-dark"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var connecte = await AuthSvc.ChargerTokenAsync();
+        if (!connecte)
+        {
+            erreur = "Vous devez être connecté.";
+            chargement = false;
+            return;
+        }
+
+        try
+        {
+            var reponse = await Http.GetAsync("reservation/lister");
+            if (reponse.IsSuccessStatusCode)
+            {
+                reservations = await reponse.Content.ReadFromJsonAsync<List<ReservationDto>>();
+            }
+            else
+            {
+                erreur = $"Erreur {(int)reponse.StatusCode} lors du chargement.";
+            }
+        }
+        catch (Exception ex)
+        {
+            erreur = $"Erreur : {ex.Message}";
+        }
+        finally
+        {
+            chargement = false;
+        }
+    }
+}

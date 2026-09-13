@@ -1,0 +1,116 @@
+@page "/annonces/{Type}/{Id:int}/reserver"
+@inject HttpClient Http
+@inject AuthServices AuthSvc
+@inject NavigationManager Navigation
+
+<PageTitle>Réserver - ImmoPlus</PageTitle>
+
+<div class="bg-immo-cream min-h-screen px-6 py-8 flex justify-center">
+    <div class="bg-white rounded shadow p-8 w-full max-w-xl h-fit">
+        <h1 class="text-2xl font-bold mb-1">Réserver ce séjour</h1>
+        <p class="text-gray-500 text-sm mb-6">Choisissez vos dates, sans dossier de candidature.</p>
+
+        @if (!AuthSvc.EstConnecte)
+        {
+            <p class="text-red-600 text-sm mb-4">Vous devez être connecté pour réserver.</p>
+            <NavLink href="login" class="text-immo-gold font-semibold text-sm">Se connecter →</NavLink>
+        }
+        else if (chargement)
+        {
+            <p>Chargement...</p>
+        }
+        else if (appartement is null)
+        {
+            <p class="text-red-600 text-sm">Logement introuvable.</p>
+        }
+        else
+        {
+            <p class="text-sm text-gray-600 mb-4">
+                @appartement.Adresse — <strong>@appartement.PrixParNuit?.ToString("N0") GNF/nuit</strong>
+            </p>
+
+            <EditForm Model="@modele" OnValidSubmit="Reserver">
+                <label class="text-sm font-medium text-gray-700">Date d'arrivée</label>
+                <InputDate @bind-Value="modele.DateArrivee"
+                           class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm" />
+
+                <label class="text-sm font-medium text-gray-700">Date de départ</label>
+                <InputDate @bind-Value="modele.DateDepart"
+                           class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-1 text-sm" />
+                <p class="text-xs text-gray-400 mb-4">Séjour maximum : @appartement.DureeMaxMois mois.</p>
+
+                @if (NombreNuits > 0)
+                {
+                    <div class="bg-immo-gold/10 text-sm rounded p-3 mb-4">
+                        @NombreNuits nuit(s) × @appartement.PrixParNuit?.ToString("N0") GNF =
+                        <strong>@((NombreNuits * (appartement.PrixParNuit ?? 0)).ToString("N0")) GNF</strong>
+                    </div>
+                }
+
+                <button type="submit"
+                        class="w-full bg-immo-gold text-immo-dark font-semibold py-3 rounded hover:opacity-90">
+                    Confirmer la réservation
+                </button>
+            </EditForm>
+
+            @if (!string.IsNullOrEmpty(message))
+            {
+                <p class="text-red-600 text-sm mt-4">@message</p>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Type { get; set; } = "sejour-court";
+    [Parameter] public int Id { get; set; }
+
+    private AppartementDto? appartement;
+    private ReservationModele modele = new();
+    private bool chargement = true;
+    private string? message;
+
+    private int NombreNuits => (modele.DateDepart.Date - modele.DateArrivee.Date).Days;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AuthSvc.ChargerTokenAsync();
+        modele.AppartementId = Id;
+
+        try
+        {
+            var reponse = await Http.GetAsync("appartement/lister");
+            if (reponse.IsSuccessStatusCode)
+            {
+                var liste = await reponse.Content.ReadFromJsonAsync<List<AppartementDto>>();
+                appartement = liste?.FirstOrDefault(a => a.Id == Id);
+            }
+        }
+        catch { }
+        finally
+        {
+            chargement = false;
+        }
+    }
+
+    private async Task Reserver()
+    {
+        try
+        {
+            var reponse = await Http.PostAsJsonAsync("reservation/creer", modele);
+            if (reponse.IsSuccessStatusCode)
+            {
+                var reservation = await reponse.Content.ReadFromJsonAsync<ReservationDto>();
+                Navigation.NavigateTo($"reservation/{reservation!.Id}");
+            }
+            else
+            {
+                message = $"Erreur {(int)reponse.StatusCode} : {await reponse.Content.ReadAsStringAsync()}";
+            }
+        }
+        catch (Exception ex)
+        {
+            message = $"Erreur : {ex.Message}";
+        }
+    }
+}

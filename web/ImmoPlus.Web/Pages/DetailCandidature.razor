@@ -1,0 +1,266 @@
+@page "/candidature/{Id:int}"
+@inject HttpClient Http
+@inject AuthServices AuthSvc
+
+<PageTitle>Candidature - ImmoPlus</PageTitle>
+
+<div class="bg-immo-cream min-h-screen px-6 py-8 flex justify-center">
+    <div class="w-full max-w-2xl">
+        @if (chargement)
+        {
+            <p>Chargement...</p>
+        }
+        else if (erreur is not null)
+        {
+            <p class="text-red-600">@erreur</p>
+        }
+        else if (candidature is not null)
+        {
+            <div class="bg-white rounded shadow p-6 mb-6">
+                <div class="flex justify-between items-start mb-4">
+                    <div>
+                        <h1 class="text-xl font-bold">@candidature.AppartementAdresse</h1>
+                        <p class="text-gray-500 text-sm">Candidat : @candidature.LocataireNom</p>
+                    </div>
+                    <span class="@ClasseBadgeStatut text-xs px-3 py-1 rounded-full">@candidature.Statut</span>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4 text-sm mb-4">
+                    <div>
+                        <p class="text-gray-500">Apport initial</p>
+                        <p class="font-semibold">@candidature.ApportInitial.ToString("N0") GNF</p>
+                    </div>
+                    <div>
+                        <p class="text-gray-500">Situation professionnelle</p>
+                        <p class="font-semibold">@candidature.SituationProfessionnelle</p>
+                    </div>
+                    <div>
+                        <p class="text-gray-500">Soumise le</p>
+                        <p class="font-semibold">@candidature.DateSoumission.ToShortDateString()</p>
+                    </div>
+                    @if (candidature.DateTraitement is not null)
+                    {
+                        <div>
+                            <p class="text-gray-500">Traitée le</p>
+                            <p class="font-semibold">@candidature.DateTraitement?.ToShortDateString()</p>
+                        </div>
+                    }
+                </div>
+
+                @if (!string.IsNullOrEmpty(candidature.MotifRefus))
+                {
+                    <p class="text-red-600 text-sm mb-4">Motif du refus : @candidature.MotifRefus</p>
+                }
+
+                @if (candidature.LocationId is not null)
+                {
+                    <p class="text-green-700 text-sm mb-2">✓ Location créée (#@candidature.LocationId)</p>
+                }
+                @if (candidature.FinancementLocationId is not null)
+                {
+                    <p class="text-green-700 text-sm mb-4">✓ Financement d'avance créé (#@candidature.FinancementLocationId)</p>
+                }
+
+                @if (candidature.Garant is not null)
+                {
+                    <hr class="my-4" />
+                    <h3 class="font-semibold text-sm mb-2">Garant</h3>
+                    <p class="text-sm">@candidature.Garant.Nom — @candidature.Garant.Telephone</p>
+                    <p class="text-sm text-gray-500">@candidature.Garant.SituationProfessionnelle</p>
+                }
+            </div>
+
+            @if (EstBailleurOuAdmin && candidature.Statut == "EnAttente")
+            {
+                <div class="bg-white rounded shadow p-6 mb-6">
+                    <h3 class="font-semibold mb-3">Décision</h3>
+                    <div class="flex gap-3 mb-3">
+                        <button @onclick="Accepter" class="bg-immo-gold text-immo-dark font-semibold px-4 py-2 rounded">
+                            Accepter
+                        </button>
+                        <button @onclick="() => afficherRefus = true" class="border border-red-400 text-red-600 font-semibold px-4 py-2 rounded">
+                            Refuser
+                        </button>
+                    </div>
+                    @if (afficherRefus)
+                    {
+                        <input @bind="motifRefus" placeholder="Motif du refus (optionnel)"
+                               class="w-full border border-gray-300 rounded px-4 py-2 text-sm mb-2" />
+                        <button @onclick="Refuser" class="bg-red-600 text-white font-semibold px-4 py-2 rounded text-sm">
+                            Confirmer le refus
+                        </button>
+                    }
+                    @if (!string.IsNullOrEmpty(messageDecision))
+                    {
+                        <p class="text-sm mt-2">@messageDecision</p>
+                    }
+                </div>
+            }
+
+            <div class="bg-white rounded shadow p-6">
+                <h3 class="font-semibold mb-3">Documents (@candidature.Documents.Count)</h3>
+                @if (candidature.Documents.Count > 0)
+                {
+                    <ul class="mb-4 text-sm">
+                        @foreach (var d in candidature.Documents)
+                        {
+                            <li class="flex justify-between border-b py-2">
+                                <span>@d.NomFichierOriginal <span class="text-gray-400">(@d.Proprietaire — @d.TypeDocument)</span></span>
+                                <span class="text-gray-400">@((d.TailleOctets / 1024)) Ko</span>
+                            </li>
+                        }
+                    </ul>
+                }
+
+                @if (EstProprietaireCandidature)
+                {
+                    <div class="border-t pt-4">
+                        <label class="text-sm font-medium text-gray-700">Propriétaire du document</label>
+                        <select @bind="proprietaireDocument" class="w-full border border-gray-300 rounded px-4 py-2 mt-1 mb-3 text-sm bg-white">
+                            <option value="Locataire">Moi (locataire)</option>
+                            <option value="Garant">Garant</option>
+                        </select>
+
+                        <label class="text-sm font-medium text-gray-700">Type de document</label>
+                        <select @bind="typeDocument" class="w-full border border-gray-300 rounded px-4 py-2 mt-1 mb-3 text-sm bg-white">
+                            <option value="PieceIdentite">Pièce d'identité</option>
+                            <option value="JustificatifRevenu">Justificatif de revenu</option>
+                            <option value="JustificatifDomicile">Justificatif de domicile</option>
+                            <option value="Autre">Autre</option>
+                        </select>
+
+                        <InputFile OnChange="SurChangementFichier" class="text-sm mb-3" />
+
+                        <button @onclick="Uploader" disabled="@(fichierSelectionne is null || envoiEnCours)"
+                                class="bg-immo-gold text-immo-dark font-semibold px-4 py-2 rounded text-sm disabled:opacity-50">
+                            @(envoiEnCours ? "Envoi..." : "Ajouter ce document")
+                        </button>
+                        @if (!string.IsNullOrEmpty(messageUpload))
+                        {
+                            <p class="text-sm mt-2">@messageUpload</p>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public int Id { get; set; }
+
+    private CandidatureDto? candidature;
+    private bool chargement = true;
+    private string? erreur;
+
+    private bool afficherRefus;
+    private string motifRefus = "";
+    private string? messageDecision;
+
+    private string proprietaireDocument = "Locataire";
+    private string typeDocument = "PieceIdentite";
+    private IBrowserFile? fichierSelectionne;
+    private bool envoiEnCours;
+    private string? messageUpload;
+
+    private bool EstBailleurOuAdmin => AuthSvc.RoleUtilisateur is "Bailleur" or "Admin";
+    private bool EstProprietaireCandidature => AuthSvc.UtilisateurId == candidature?.LocataireId || AuthSvc.RoleUtilisateur == "Admin";
+
+    private string ClasseBadgeStatut => candidature?.Statut switch
+    {
+        "Acceptee" => "bg-green-100 text-green-700",
+        "Refusee" => "bg-red-100 text-red-700",
+        _ => "bg-immo-dark/10 text-immo-dark"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AuthSvc.ChargerTokenAsync();
+        await Charger();
+    }
+
+    private async Task Charger()
+    {
+        chargement = true;
+        try
+        {
+            var reponse = await Http.GetAsync($"candidature/{Id}");
+            if (reponse.IsSuccessStatusCode)
+            {
+                candidature = await reponse.Content.ReadFromJsonAsync<CandidatureDto>();
+            }
+            else
+            {
+                erreur = $"Erreur {(int)reponse.StatusCode} lors du chargement.";
+            }
+        }
+        catch (Exception ex)
+        {
+            erreur = $"Erreur : {ex.Message}";
+        }
+        finally
+        {
+            chargement = false;
+        }
+    }
+
+    private async Task Accepter()
+    {
+        var reponse = await Http.PostAsJsonAsync($"candidature/{Id}/accepter", new { });
+        messageDecision = reponse.IsSuccessStatusCode
+            ? "Candidature acceptée."
+            : $"Erreur : {await reponse.Content.ReadAsStringAsync()}";
+        await Charger();
+    }
+
+    private async Task Refuser()
+    {
+        var reponse = await Http.PostAsJsonAsync($"candidature/{Id}/refuser", new { MotifRefus = motifRefus });
+        messageDecision = reponse.IsSuccessStatusCode
+            ? "Candidature refusée."
+            : $"Erreur : {await reponse.Content.ReadAsStringAsync()}";
+        afficherRefus = false;
+        await Charger();
+    }
+
+    private void SurChangementFichier(InputFileChangeEventArgs e)
+    {
+        fichierSelectionne = e.File;
+    }
+
+    private async Task Uploader()
+    {
+        if (fichierSelectionne is null) return;
+        envoiEnCours = true;
+        messageUpload = null;
+        try
+        {
+            using var contenu = new MultipartFormDataContent();
+            using var fluxFichier = fichierSelectionne.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
+            using var contenuFichier = new StreamContent(fluxFichier);
+            contenu.Add(contenuFichier, "Fichier", fichierSelectionne.Name);
+            contenu.Add(new StringContent(proprietaireDocument), "Proprietaire");
+            contenu.Add(new StringContent(typeDocument), "TypeDocument");
+
+            var reponse = await Http.PostAsync($"candidature/{Id}/documents", contenu);
+            if (reponse.IsSuccessStatusCode)
+            {
+                messageUpload = "Document ajouté.";
+                fichierSelectionne = null;
+                await Charger();
+            }
+            else
+            {
+                messageUpload = $"Erreur : {await reponse.Content.ReadAsStringAsync()}";
+            }
+        }
+        catch (Exception ex)
+        {
+            messageUpload = $"Erreur : {ex.Message}";
+        }
+        finally
+        {
+            envoiEnCours = false;
+        }
+    }
+}

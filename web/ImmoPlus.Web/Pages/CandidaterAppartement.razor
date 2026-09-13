@@ -1,0 +1,123 @@
+@page "/annonces/{Type}/{Id:int}/candidater"
+@inject HttpClient Http
+@inject AuthServices AuthSvc
+@inject NavigationManager Navigation
+
+<PageTitle>Candidater - ImmoPlus</PageTitle>
+
+<div class="bg-immo-cream min-h-screen px-6 py-8 flex justify-center">
+    <div class="bg-white rounded shadow p-8 w-full max-w-2xl h-fit">
+        <h1 class="text-2xl font-bold mb-1">Candidater pour ce logement</h1>
+        <p class="text-gray-500 text-sm mb-6">
+            Votre situation, et un garant si votre apport ne couvre pas la totalité de l'avance exigée.
+        </p>
+
+        @if (!AuthSvc.EstConnecte || AuthSvc.RoleUtilisateur != "Locataire")
+        {
+            <p class="text-red-600 text-sm">Vous devez être connecté en tant que Locataire pour candidater.</p>
+        }
+        else
+        {
+            <EditForm Model="@modele" OnValidSubmit="Soumettre">
+                <label class="text-sm font-medium text-gray-700">Apport initial (GNF)</label>
+                <InputNumber @bind-Value="modele.ApportInitial"
+                             class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-1 text-sm" />
+                <p class="text-xs text-gray-400 mb-4">
+                    Ce que vous pouvez payer immédiatement. Le reste peut être avancé par la plateforme
+                    (remboursable en mensualités), sous réserve d'acceptation.
+                </p>
+
+                <label class="text-sm font-medium text-gray-700">Situation professionnelle</label>
+                <InputSelect @bind-Value="modele.SituationProfessionnelle"
+                             class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm bg-white">
+                    <option value="CDI">CDI</option>
+                    <option value="CDD">CDD</option>
+                    <option value="Independant">Indépendant</option>
+                    <option value="DebutActiviteRevenuFixe">Début d'activité, revenu fixe</option>
+                    <option value="Autre">Autre</option>
+                </InputSelect>
+
+                <label class="flex items-center gap-2 text-sm font-medium text-gray-700 mb-4">
+                    <input type="checkbox" @bind="avecGarant" />
+                    Ajouter un garant à mon dossier
+                </label>
+
+                @if (avecGarant)
+                {
+                    <div class="border border-gray-200 rounded p-4 mb-4">
+                        <label class="text-sm font-medium text-gray-700">Nom du garant</label>
+                        <InputText @bind-Value="garant.Nom"
+                                   class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm" />
+
+                        <label class="text-sm font-medium text-gray-700">Téléphone du garant</label>
+                        <InputText @bind-Value="garant.Telephone"
+                                   class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm" />
+
+                        <label class="text-sm font-medium text-gray-700">Email du garant (optionnel)</label>
+                        <InputText @bind-Value="garant.Email"
+                                   class="w-full border border-gray-300 rounded px-4 py-3 mt-1 mb-4 text-sm" />
+
+                        <label class="text-sm font-medium text-gray-700">Situation professionnelle du garant</label>
+                        <InputSelect @bind-Value="garant.SituationProfessionnelle"
+                                     class="w-full border border-gray-300 rounded px-4 py-3 mt-1 text-sm bg-white">
+                            <option value="CDI">CDI</option>
+                            <option value="CDD">CDD</option>
+                            <option value="Independant">Indépendant</option>
+                            <option value="DebutActiviteRevenuFixe">Début d'activité, revenu fixe</option>
+                            <option value="Autre">Autre</option>
+                        </InputSelect>
+                    </div>
+                }
+
+                <button type="submit"
+                        class="w-full bg-immo-gold text-immo-dark font-semibold py-3 rounded hover:opacity-90">
+                    Envoyer ma candidature
+                </button>
+            </EditForm>
+
+            @if (!string.IsNullOrEmpty(message))
+            {
+                <p class="text-red-600 text-sm mt-4">@message</p>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Type { get; set; } = "longue-duree";
+    [Parameter] public int Id { get; set; }
+
+    private CandidatureModele modele = new();
+    private GarantDto garant = new();
+    private bool avecGarant;
+    private string? message;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AuthSvc.ChargerTokenAsync();
+        modele.AppartementId = Id;
+    }
+
+    private async Task Soumettre()
+    {
+        try
+        {
+            modele.Garant = avecGarant ? garant : null;
+            var reponse = await Http.PostAsJsonAsync("candidature/creer", modele);
+
+            if (reponse.IsSuccessStatusCode)
+            {
+                var candidature = await reponse.Content.ReadFromJsonAsync<CandidatureDto>();
+                Navigation.NavigateTo($"candidature/{candidature!.Id}");
+            }
+            else
+            {
+                message = $"Erreur {(int)reponse.StatusCode} : {await reponse.Content.ReadAsStringAsync()}";
+            }
+        }
+        catch (Exception ex)
+        {
+            message = $"Erreur : {ex.Message}";
+        }
+    }
+}
