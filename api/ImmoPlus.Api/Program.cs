@@ -64,6 +64,13 @@ builder.Services.AddCors(options =>
 builder.Services.AddAuthorization();
 
 var app = builder.Build();
+
+// Applique automatiquement les migrations en attente au démarrage (évite une étape manuelle à chaque déploiement).
+using (var scope = app.Services.CreateScope())
+{
+    scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate();
+}
+
 app.UseMiddleware<MiddlewareException>();
 
 // Swagger exposé en permanence : sert de documentation vivante pour le futur client mobile.
