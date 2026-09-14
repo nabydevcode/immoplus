@@ -79,7 +79,7 @@
 
     private async Task SeConnecter()
     {
-        var succes = await AuthSvc.ConnexionAsync(modele.Email, modele.MotDePasse);
+        var (succes, erreur) = await AuthSvc.ConnexionAsync(modele.Email, modele.MotDePasse);
 
         if (succes)
         {
@@ -87,7 +87,7 @@
         }
         else
         {
-            messageErreur = "Email ou mot de passe incorrect.";
+            messageErreur = erreur;
         }
     }
 

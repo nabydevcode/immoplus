@@ -22,7 +22,7 @@ public class AuthServices
         _localStorage = localStorage;
     }
 
-    public async Task<bool> ConnexionAsync(string email, string motDePasse)
+    public async Task<(bool Succes, string? MessageErreur)> ConnexionAsync(string email, string motDePasse)
     {
         var reponse = await _http.PostAsJsonAsync("utilisateur/connexion", new
         {
@@ -31,11 +31,14 @@ public class AuthServices
         });
 
         if (!reponse.IsSuccessStatusCode)
-            return false;
+        {
+            var corps = await reponse.Content.ReadFromJsonAsync<ReponseErreur>();
+            return (false, corps?.Message ?? "Email ou mot de passe incorrect.");
+        }
 
         var resultat = await reponse.Content.ReadFromJsonAsync<ReponseConnexion>();
         if (resultat?.Token is null)
-            return false;
+            return (false, "Email ou mot de passe incorrect.");
 
         await _localStorage.SetItemAsync("authToken", resultat.Token);
         await _localStorage.SetItemAsync("authId", resultat.Id);
@@ -51,7 +54,7 @@ public class AuthServices
         RoleUtilisateur = resultat.Role;
         OnChange?.Invoke();
 
-        return true;
+        return (true, null);
     }
 
     public async Task DeconnexionAsync()
@@ -96,5 +99,10 @@ public class AuthServices
         public string? Token { get; set; }
         public string? Nom { get; set; }
         public string? Role { get; set; }
+    }
+
+    private class ReponseErreur
+    {
+        public string? Message { get; set; }
     }
 }

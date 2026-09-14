@@ -31,13 +31,19 @@ public class UtilisateurServices
             throw new InvalidOperationException("Rôle invalide. Utilisez Locataire, Bailleur ou Admin");
         }
 
+        // Bootstrap : le tout premier compte du système, ou le tout premier Admin, est auto-validé
+        // (sinon personne ne pourrait jamais valider qui que ce soit).
+        var estPremierUtilisateur = !await _context.Utilisateurs.AnyAsync();
+        var estPremierAdmin = role == RoleUtilisateur.Admin && !await _context.Utilisateurs.AnyAsync(u => u.Role == RoleUtilisateur.Admin);
+
         var utilisateur = new Utilisateur
         {
             Nom = dto.Nom,
             Telephone = dto.Telephone,
             Email = dto.Email,
             MotDePasseHash = BCrypt.Net.BCrypt.HashPassword(dto.MotDePasse),
-            Role = role
+            Role = role,
+            Statut = (estPremierUtilisateur || estPremierAdmin) ? StatutUtilisateur.Valide : StatutUtilisateur.EnAttente
         };
 
         await _context.Utilisateurs.AddAsync(utilisateur);
@@ -49,7 +55,8 @@ public class UtilisateurServices
             Nom = utilisateur.Nom,
             Telephone = utilisateur.Telephone,
             Email = utilisateur.Email,
-            Role = utilisateur.Role.ToString()
+            Role = utilisateur.Role.ToString(),
+            Statut = utilisateur.Statut.ToString()
         };
     }
 
@@ -61,6 +68,15 @@ public class UtilisateurServices
             throw new NotFoundException("Email ou mot de passe incorrect");
         }
 
+        if (utilisateur.Statut == StatutUtilisateur.EnAttente)
+        {
+            throw new ConflictException("Votre compte est en attente de validation par un administrateur");
+        }
+        if (utilisateur.Statut == StatutUtilisateur.Refuse)
+        {
+            throw new ConflictException("Votre compte n'a pas été validé par l'administrateur");
+        }
+
         return new UtilisateurResponseDto
         {
             Id = utilisateur.Id,
@@ -68,7 +84,50 @@ public class UtilisateurServices
             Email = utilisateur.Email,
             Telephone = utilisateur.Telephone,
             Role = utilisateur.Role.ToString(),
+            Statut = utilisateur.Statut.ToString(),
             Token = _tokenServices.GenererToken(utilisateur)
+        };
+    }
+
+    public async Task<UtilisateurResponseDto> ValiderAsync(int id)
+    {
+        var utilisateur = await _context.Utilisateurs.FindAsync(id);
+        if (utilisateur is null)
+        {
+            throw new NotFoundException("Cet utilisateur n'existe pas");
+        }
+        utilisateur.Statut = StatutUtilisateur.Valide;
+        await _context.SaveChangesAsync();
+
+        return new UtilisateurResponseDto
+        {
+            Id = utilisateur.Id,
+            Nom = utilisateur.Nom,
+            Telephone = utilisateur.Telephone,
+            Email = utilisateur.Email,
+            Role = utilisateur.Role.ToString(),
+            Statut = utilisateur.Statut.ToString()
+        };
+    }
+
+    public async Task<UtilisateurResponseDto> RefuserAsync(int id)
+    {
+        var utilisateur = await _context.Utilisateurs.FindAsync(id);
+        if (utilisateur is null)
+        {
+            throw new NotFoundException("Cet utilisateur n'existe pas");
+        }
+        utilisateur.Statut = StatutUtilisateur.Refuse;
+        await _context.SaveChangesAsync();
+
+        return new UtilisateurResponseDto
+        {
+            Id = utilisateur.Id,
+            Nom = utilisateur.Nom,
+            Telephone = utilisateur.Telephone,
+            Email = utilisateur.Email,
+            Role = utilisateur.Role.ToString(),
+            Statut = utilisateur.Statut.ToString()
         };
     }
 
@@ -90,7 +149,8 @@ public class UtilisateurServices
                 Nom = u.Nom,
                 Telephone = u.Telephone,
                 Email = u.Email,
-                Role = u.Role.ToString()
+                Role = u.Role.ToString(),
+                Statut = u.Statut.ToString()
             })
             .ToListAsync();
 

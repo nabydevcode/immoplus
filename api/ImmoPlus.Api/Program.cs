@@ -99,6 +99,12 @@ app.MapGet("/utilisateur/lister", async (UtilisateurServices services, int page,
     return Results.Ok(await services.ListerAsync(page, taille));
 }).RequireAuthorization(policy => policy.RequireRole("Admin"));
 
+app.MapPost("/utilisateur/{id:int}/valider", async (int id, UtilisateurServices services) =>
+    Results.Ok(await services.ValiderAsync(id))).RequireAuthorization(policy => policy.RequireRole("Admin"));
+
+app.MapPost("/utilisateur/{id:int}/refuser", async (int id, UtilisateurServices services) =>
+    Results.Ok(await services.RefuserAsync(id))).RequireAuthorization(policy => policy.RequireRole("Admin"));
+
 // --- Appartement ---
 app.MapPost("/appartement/ajouter", async (AppartementServices services, AppartementDto dto) =>
 {

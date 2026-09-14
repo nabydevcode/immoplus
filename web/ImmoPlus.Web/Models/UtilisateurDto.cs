@@ -7,6 +7,7 @@ public class UtilisateurDto
     public string Email { get; set; } = "";
     public string Telephone { get; set; } = "";
     public string Role { get; set; } = "";
+    public string Statut { get; set; } = "";
 }
 
 public class InscriptionModele

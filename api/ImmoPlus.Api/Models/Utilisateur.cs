@@ -10,6 +10,7 @@ public class Utilisateur
     public string Email { get; set; } = string.Empty;
     public string MotDePasseHash { get; set; } = string.Empty;
     public RoleUtilisateur Role { get; set; }
+    public StatutUtilisateur Statut { get; set; } = StatutUtilisateur.EnAttente;
 
     public List<Appartement> Appartements { get; set; } = new();
     public List<Location> Locations { get; set; } = new();
