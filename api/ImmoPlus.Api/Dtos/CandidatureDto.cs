@@ -24,6 +24,8 @@ public class CandidatureResponseDto
     public int Id { get; set; }
     public int LocataireId { get; set; }
     public string LocataireNom { get; set; } = string.Empty;
+    public string LocataireTelephone { get; set; } = string.Empty;
+    public string LocataireEmail { get; set; } = string.Empty;
     public int AppartementId { get; set; }
     public string AppartementAdresse { get; set; } = string.Empty;
     public decimal ApportInitial { get; set; }
@@ -34,6 +36,11 @@ public class CandidatureResponseDto
     public string? MotifRefus { get; set; }
     public GarantResponseDto? Garant { get; set; }
     public List<DocumentResponseDto> Documents { get; set; } = new();
+    public List<DemandeComplementResponseDto> DemandesComplement { get; set; } = new();
+    public List<VisiteResponseDto> Visites { get; set; } = new();
     public int? LocationId { get; set; }
     public int? FinancementLocationId { get; set; }
+    /// <summary>Après l'attribution : date de réception de l'apport, puis de remise des clés.</summary>
+    public DateTime? DateApportPaye { get; set; }
+    public DateTime? DateRemiseCles { get; set; }
 }

@@ -12,6 +12,15 @@ publish/
 # Uploaded documents (local storage)
 api/ImmoPlus.Api/Storage/documents/*
 !api/ImmoPlus.Api/Storage/documents/.gitkeep
+api/ImmoPlus.Api/Storage/photos/*
+!api/ImmoPlus.Api/Storage/photos/.gitkeep
+api/ImmoPlus.Api/Storage/etats-des-lieux/
+
+# Copies de sauvegarde locales de la base
+api/ImmoPlus.Api/sauvegarde-db-*/
+# Sauvegardes automatiques (VACUUM INTO) et cache des miniatures de photos
+api/ImmoPlus.Api/Sauvegardes/
+api/ImmoPlus.Api/Storage/miniatures/
 
 # Node / Tailwind
 node_modules/
@@ -22,3 +31,7 @@ web/ImmoPlus.Web/wwwroot/css/tailwind-output.css
 .vscode/
 *.swp
 .DS_Store
+api/ImmoPlus.Api/Storage/identites/
+
+# Réglages privés de la passerelle SMS
+api/ImmoPlus.Api/sms.env

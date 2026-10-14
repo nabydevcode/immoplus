@@ -4,5 +4,7 @@ public enum StatutUtilisateur
 {
     EnAttente,
     Valide,
-    Refuse
+    Refuse,
+    /// <summary>Compte suspendu par un administrateur : connexion et sessions bloquées, annonces masquées.</summary>
+    Desactive
 }

@@ -10,15 +10,23 @@ using ImmoPlus.Api.Models.Enums;
 public class MensualiteServices
 {
     private readonly AppDbContext _context;
+    private readonly NotificationServices _notificationServices;
 
-    public MensualiteServices(AppDbContext context)
+    public MensualiteServices(AppDbContext context, NotificationServices notificationServices)
     {
         _context = context;
+        _notificationServices = notificationServices;
     }
 
     public async Task GenererEcheancierAsync(int financementLocationId, int utilisateurId, RoleUtilisateur role)
     {
+        // Double clic : la seconde génération attend la première, puis voit l'échéancier existant (409) au lieu de le dupliquer.
+        await using var transaction = await _context.Database.BeginTransactionAsync();
         var financement = await ChargerAvecAutorisationAsync(financementLocationId, utilisateurId, role);
+        if (financement.Location!.DateApportPaye is null)
+        {
+            throw new ConflictException("L'échéancier se génère après le paiement de l'apport");
+        }
 
         var echeancierExiste = await _context.Mensualites.AnyAsync(m => m.FinancementLocationId == financementLocationId);
         if (echeancierExiste)
@@ -27,47 +35,50 @@ public class MensualiteServices
         }
 
         var dateDepart = DateTime.UtcNow.Date;
+        // Arrondi au franc, dernière mensualité ajustée : recalculé depuis le capital et le taux (un financement créé avant
+        // cette règle peut porter une mensualité à centimes). Les échéanciers déjà générés ne sont jamais recalculés.
+        var (montantMensualite, derniere) = FinancementServices.Echeancier(financement.MontantARembourser, financement.TauxFrais, financement.NombreMensualites);
+        financement.MontantMensualite = montantMensualite;
+        var mensualites = new List<Mensualite>();
         for (int i = 1; i <= financement.NombreMensualites; i++)
         {
-            await _context.Mensualites.AddAsync(new Mensualite
+            mensualites.Add(new Mensualite
             {
                 FinancementLocationId = financementLocationId,
                 NumeroEcheance = i,
                 DateEcheance = dateDepart.AddMonths(i - 1),
-                MontantDu = financement.MontantMensualite,
+                MontantDu = i == financement.NombreMensualites ? derniere : montantMensualite,
                 MontantPaye = 0,
                 Statut = StatutMensualite.AVenir
             });
         }
+        await _context.Mensualites.AddRangeAsync(mensualites);
         financement.Statut = StatutFinancement.EnCours;
         await _context.SaveChangesAsync();
+        await transaction.CommitAsync();
+
+        await _notificationServices.EcheancierGenereAsync(financement.Location!.Locataire!, financement, mensualites);
     }
 
     public async Task<List<MensualiteResponseDto>> ListerParFinancementAsync(int financementId, int utilisateurId, RoleUtilisateur role)
     {
         await ChargerAvecAutorisationAsync(financementId, utilisateurId, role);
 
-        return await _context.Mensualites
+        var mensualites = await _context.Mensualites
             .AsNoTracking()
+            .Include(m => m.Paiements)
             .Where(m => m.FinancementLocationId == financementId)
             .OrderBy(m => m.NumeroEcheance)
-            .Select(m => new MensualiteResponseDto
-            {
-                Id = m.Id,
-                FinancementLocationId = m.FinancementLocationId,
-                NumeroEcheance = m.NumeroEcheance,
-                DateEcheance = m.DateEcheance,
-                MontantDu = m.MontantDu,
-                MontantPaye = m.MontantPaye,
-                Statut = m.Statut.ToString()
-            })
             .ToListAsync();
+        var aujourdhui = DateTime.UtcNow;
+        return mensualites.Select(m => SuiviRetards.VersDto(m, aujourdhui)).ToList();
     }
 
     private async Task<FinancementLocation> ChargerAvecAutorisationAsync(int financementLocationId, int utilisateurId, RoleUtilisateur role)
     {
         var financement = await _context.FinancementLocations
             .Include(f => f.Location).ThenInclude(l => l!.Appartement)
+            .Include(f => f.Location).ThenInclude(l => l!.Locataire)
             .FirstOrDefaultAsync(f => f.Id == financementLocationId);
 
         if (financement is null)
@@ -77,8 +88,7 @@ public class MensualiteServices
 
         var location = financement.Location!;
         var autorise = role == RoleUtilisateur.Admin
-            || (role == RoleUtilisateur.Locataire && location.LocataireId == utilisateurId)
-            || (role == RoleUtilisateur.Bailleur && location.Appartement!.BailleurId == utilisateurId);
+            || (role == RoleUtilisateur.Locataire && location.LocataireId == utilisateurId);
 
         if (!autorise)
         {

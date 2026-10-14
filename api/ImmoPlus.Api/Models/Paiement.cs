@@ -10,6 +10,7 @@ public class Paiement
     // règle un échéancier de financement, ou une réservation de séjour court.
     public int? MensualiteId { get; set; }
     public int? ReservationId { get; set; }
+    public int? LoyerId { get; set; }
 
     public decimal Montant { get; set; }
     public DateTime DatePaiement { get; set; }
@@ -21,4 +22,5 @@ public class Paiement
 
     [JsonIgnore]
     public Reservation? Reservation { get; set; }
+    public Loyer? Loyer { get; set; }
 }

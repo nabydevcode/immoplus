@@ -1,0 +1,44 @@
+services:
+  api:
+    build:
+      context: ./api/ImmoPlus.Api
+    ports:
+      - "5107:5107"
+    environment:
+      - Smtp__Host=mailhog
+    # Réglages privés facultatifs (passerelle SMS Android…) : copier sms.env.exemple en sms.env (non versionné).
+    env_file:
+      - path: ./api/ImmoPlus.Api/sms.env
+        required: false
+    volumes:
+      - ./api/ImmoPlus.Api:/src
+      - api-bin:/src/bin
+      - api-obj:/src/obj
+    depends_on:
+      - mailhog
+
+  # Faux serveur SMTP pour le dev : capture les emails sans les envoyer (interface sur http://localhost:8025).
+  mailhog:
+    image: mailhog/mailhog
+    platform: linux/amd64 # pas d'image arm64 officielle, émulé sur les Mac Apple Silicon
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+  web:
+    build:
+      context: ./web/immoplus-web-react
+    ports:
+      - "5173:5173"
+    environment:
+      - API_PROXY=http://api:5107
+    volumes:
+      - ./web/immoplus-web-react:/app
+      - web-node-modules:/app/node_modules
+    depends_on:
+      - api
+
+volumes:
+  api-bin:
+  api-obj:
+  web-node-modules:

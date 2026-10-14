@@ -30,6 +30,22 @@ namespace ImmoPlus.Api.Migrations
                     b.Property<int>("BailleurId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int?>("Capacite")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal?>("Caution")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("Chambres")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime?>("DateCreation")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DateDesactivation")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Description")
                         .HasColumnType("TEXT");
 
@@ -42,22 +58,146 @@ namespace ImmoPlus.Api.Migrations
                     b.Property<int?>("DureeMaxMois")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("Equipements")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("EstDesactive")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal?>("FraisMenage")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("HeureArrivee")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("HeureDepart")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("InstructionsArrivee")
+                        .HasColumnType("TEXT");
+
+                    b.Property<double?>("Latitude")
+                        .HasColumnType("REAL");
+
+                    b.Property<int?>("Lits")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("Longitude")
+                        .HasColumnType("REAL");
+
                     b.Property<decimal?>("LoyerMensuel")
                         .HasPrecision(18, 2)
                         .HasColumnType("TEXT");
+
+                    b.Property<int?>("NuitsMin")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("PolitiqueAnnulation")
+                        .HasColumnType("INTEGER");
 
                     b.Property<decimal?>("PrixParNuit")
                         .HasPrecision(18, 2)
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("Quartier")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("ReductionMoisPct")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("ReductionSemainePct")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("ReservationInstantanee")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("SallesDeBain")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int>("TypeOffre")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("Ville")
+                        .HasColumnType("TEXT");
 
                     b.HasKey("Id");
 
                     b.HasIndex("BailleurId");
 
                     b.ToTable("Appartements");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.Avis", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("AppartementId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("AuteurId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("CibleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Commentaire")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("Communication")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("DateCreation")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DateReponse")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("Emplacement")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("LocationId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("Masque")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Note")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("Proprete")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("RapportQualitePrix")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ReponseHote")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("ReservationId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Sens")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AppartementId");
+
+                    b.HasIndex("AuteurId");
+
+                    b.HasIndex("CibleId");
+
+                    b.HasIndex("LocationId", "Sens")
+                        .IsUnique();
+
+                    b.HasIndex("ReservationId", "Sens")
+                        .IsUnique();
+
+                    b.ToTable("Avis");
                 });
 
             modelBuilder.Entity("ImmoPlus.Api.Models.Candidature", b =>
@@ -100,6 +240,38 @@ namespace ImmoPlus.Api.Migrations
                     b.ToTable("Candidatures");
                 });
 
+            modelBuilder.Entity("ImmoPlus.Api.Models.DemandeComplement", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("CandidatureId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("CompletNotifie")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("DateDemande")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("DateLimite")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Message")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Pieces")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CandidatureId");
+
+                    b.ToTable("DemandesComplement");
+                });
+
             modelBuilder.Entity("ImmoPlus.Api.Models.Document", b =>
                 {
                     b.Property<int>("Id")
@@ -134,6 +306,24 @@ namespace ImmoPlus.Api.Migrations
                     b.HasIndex("CandidatureId");
 
                     b.ToTable("Documents");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.Favori", b =>
+                {
+                    b.Property<int>("UtilisateurId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("AppartementId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("DateCreation")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("UtilisateurId", "AppartementId");
+
+                    b.HasIndex("AppartementId");
+
+                    b.ToTable("Favoris");
                 });
 
             modelBuilder.Entity("ImmoPlus.Api.Models.FinancementLocation", b =>
@@ -213,6 +403,89 @@ namespace ImmoPlus.Api.Migrations
                     b.ToTable("Garants");
                 });
 
+            modelBuilder.Entity("ImmoPlus.Api.Models.Indisponibilite", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("AppartementId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("DateCreation")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("DateDebut")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("DateFin")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Motif")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AppartementId");
+
+                    b.ToTable("Indisponibilites");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.JournalAction", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AdresseIp")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Cible")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("CibleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("Date")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Details")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("UtilisateurId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("UtilisateurNom")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Date");
+
+                    b.HasIndex("Cible", "CibleId");
+
+                    b.HasIndex("UtilisateurId", "Date");
+
+                    b.ToTable("JournalActions");
+                });
+
             modelBuilder.Entity("ImmoPlus.Api.Models.Location", b =>
                 {
                     b.Property<int>("Id")
@@ -225,14 +498,38 @@ namespace ImmoPlus.Api.Migrations
                     b.Property<int?>("CandidatureId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<DateTime?>("DateApportPaye")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("DateDebut")
                         .HasColumnType("TEXT");
 
                     b.Property<DateTime?>("DateFin")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTime?>("DateFinPrevue")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DatePreavis")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DateRemiseCles")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("LocataireId")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("ModePaiementApport")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("MotifPreavis")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PreavisDonnePar")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ReferenceApport")
+                        .HasColumnType("TEXT");
 
                     b.Property<int>("Statut")
                         .HasColumnType("INTEGER");
@@ -248,13 +545,59 @@ namespace ImmoPlus.Api.Migrations
                     b.ToTable("Locations");
                 });
 
+            modelBuilder.Entity("ImmoPlus.Api.Models.Loyer", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime?>("DateDernierRappelRetard")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("DateEcheance")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DateRappelEcheance")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("LocationId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("MontantDu")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("MontantPaye")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Numero")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Statut")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LocationId", "Numero")
+                        .IsUnique();
+
+                    b.ToTable("Loyers");
+                });
+
             modelBuilder.Entity("ImmoPlus.Api.Models.Mensualite", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<DateTime?>("DateDernierRappelRetard")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("DateEcheance")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DateRappelEcheance")
                         .HasColumnType("TEXT");
 
                     b.Property<int>("FinancementLocationId")
@@ -276,9 +619,89 @@ namespace ImmoPlus.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("FinancementLocationId");
+                    b.HasIndex("FinancementLocationId", "NumeroEcheance")
+                        .IsUnique();
 
                     b.ToTable("Mensualites");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.Message", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("AuteurId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Contenu")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("DateEnvoi")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DateLecture")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("ReservationId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AuteurId");
+
+                    b.HasIndex("ReservationId");
+
+                    b.ToTable("Messages");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.NotificationSms", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Canal")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("DateEnvoi")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Erreur")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Evenement")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ReferenceFournisseur")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Statut")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Telephone")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Texte")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("UtilisateurId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DateEnvoi");
+
+                    b.HasIndex("UtilisateurId", "DateEnvoi");
+
+                    b.ToTable("NotificationsSms");
                 });
 
             modelBuilder.Entity("ImmoPlus.Api.Models.Paiement", b =>
@@ -289,6 +712,9 @@ namespace ImmoPlus.Api.Migrations
 
                     b.Property<DateTime>("DatePaiement")
                         .HasColumnType("TEXT");
+
+                    b.Property<int?>("LoyerId")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int?>("MensualiteId")
                         .HasColumnType("INTEGER");
@@ -309,11 +735,131 @@ namespace ImmoPlus.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("LoyerId");
+
                     b.HasIndex("MensualiteId");
 
                     b.HasIndex("ReservationId");
 
                     b.ToTable("Paiements");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.PhotoAppartement", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("AppartementId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("CheminStockage")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("DateUpload")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("Est360")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Libelle")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("NomFichierOriginal")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Ordre")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AppartementId");
+
+                    b.ToTable("PhotosAppartement");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.PhotoEtatDesLieux", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("AuteurId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Chemin")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Commentaire")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("DateCreation")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Moment")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ReservationId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AuteurId");
+
+                    b.HasIndex("ReservationId");
+
+                    b.ToTable("PhotosEtatDesLieux");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.PieceIdentite", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Chemin")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CheminVerso")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DateDecision")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("DateEnvoi")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("DecideParId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("MotifRefus")
+                        .HasMaxLength(500)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Statut")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Type")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("UtilisateurId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DecideParId");
+
+                    b.HasIndex("UtilisateurId")
+                        .IsUnique()
+                        .HasFilter("\"Statut\" = 0");
+
+                    b.HasIndex("Statut", "DateEnvoi");
+
+                    b.ToTable("PiecesIdentite");
                 });
 
             modelBuilder.Entity("ImmoPlus.Api.Models.Reservation", b =>
@@ -322,8 +868,18 @@ namespace ImmoPlus.Api.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<int?>("AnnuleePar")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int>("AppartementId")
                         .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("Caution")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DateAnnulation")
+                        .HasColumnType("TEXT");
 
                     b.Property<DateTime>("DateArrivee")
                         .HasColumnType("TEXT");
@@ -334,11 +890,67 @@ namespace ImmoPlus.Api.Migrations
                     b.Property<DateTime>("DateDepart")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTime?>("DateDernierEmailMessageHote")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DateDernierEmailMessageVoyageur")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DateEnvoiInstructions")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DateRemboursement")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DateReponseHote")
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("FraisMenage")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("LocataireId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("ModeRemboursement")
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal?>("MontantARembourser")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal?>("MontantRembourse")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
                     b.Property<decimal>("MontantTotal")
                         .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("MotifAnnulation")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("MotifRefus")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("NombreNuits")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("NombreVoyageurs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("PolitiqueAnnulation")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("PrixParNuit")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("ReductionMontant")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ReferenceRemboursement")
                         .HasColumnType("TEXT");
 
                     b.Property<int>("Statut")
@@ -353,23 +965,174 @@ namespace ImmoPlus.Api.Migrations
                     b.ToTable("Reservations");
                 });
 
+            modelBuilder.Entity("ImmoPlus.Api.Models.Signalement", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ActionAppliquee")
+                        .HasMaxLength(30)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AdresseIp")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AuteurEmail")
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("AuteurId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Cible")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("CibleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("DateCreation")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DateTraitement")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DecisionAdmin")
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Motif")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Statut")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Texte")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("TraiteParId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AuteurId");
+
+                    b.HasIndex("TraiteParId");
+
+                    b.HasIndex("Cible", "CibleId");
+
+                    b.HasIndex("Statut", "DateCreation");
+
+                    b.ToTable("Signalements");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.TransactionMobile", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("DateCreation")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("DateMaj")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("MessageErreur")
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("Montant")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Operateur")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("PaiementId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ReferenceFournisseur")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("ReservationId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Statut")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Telephone")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("UtilisateurId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PaiementId");
+
+                    b.HasIndex("ReferenceFournisseur")
+                        .IsUnique()
+                        .HasFilter("\"ReferenceFournisseur\" IS NOT NULL");
+
+                    b.HasIndex("ReservationId")
+                        .IsUnique()
+                        .HasFilter("\"Statut\" = 0");
+
+                    b.HasIndex("UtilisateurId");
+
+                    b.ToTable("TransactionsMobiles");
+                });
+
             modelBuilder.Entity("ImmoPlus.Api.Models.Utilisateur", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<DateTime?>("DateCreation")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DateDernierRecapRetards")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DateDesactivation")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("DateVerificationIdentite")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Email")
                         .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IdentiteVerifiee")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime?>("JetonReinitialisationExpiration")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("JetonReinitialisationHash")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("MotDePasseHash")
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("MotifDesactivation")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Nom")
                         .IsRequired()
                         .HasColumnType("TEXT");
+
+                    b.Property<bool>("NotificationsSms")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("Role")
                         .HasColumnType("INTEGER");
@@ -386,6 +1149,40 @@ namespace ImmoPlus.Api.Migrations
                     b.ToTable("Utilisateurs");
                 });
 
+            modelBuilder.Entity("ImmoPlus.Api.Models.Visite", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("CandidatureId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("DateCreation")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("DateHeure")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Message")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("NotesBailleur")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ReponseLocataire")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Statut")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CandidatureId");
+
+                    b.ToTable("Visites");
+                });
+
             modelBuilder.Entity("ImmoPlus.Api.Models.Appartement", b =>
                 {
                     b.HasOne("ImmoPlus.Api.Models.Utilisateur", "Bailleur")
@@ -395,6 +1192,47 @@ namespace ImmoPlus.Api.Migrations
                         .IsRequired();
 
                     b.Navigation("Bailleur");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.Avis", b =>
+                {
+                    b.HasOne("ImmoPlus.Api.Models.Appartement", "Appartement")
+                        .WithMany()
+                        .HasForeignKey("AppartementId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ImmoPlus.Api.Models.Utilisateur", "Auteur")
+                        .WithMany()
+                        .HasForeignKey("AuteurId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ImmoPlus.Api.Models.Utilisateur", "Cible")
+                        .WithMany()
+                        .HasForeignKey("CibleId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ImmoPlus.Api.Models.Location", "Location")
+                        .WithMany()
+                        .HasForeignKey("LocationId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("ImmoPlus.Api.Models.Reservation", "Reservation")
+                        .WithMany("Avis")
+                        .HasForeignKey("ReservationId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.Navigation("Appartement");
+
+                    b.Navigation("Auteur");
+
+                    b.Navigation("Cible");
+
+                    b.Navigation("Location");
+
+                    b.Navigation("Reservation");
                 });
 
             modelBuilder.Entity("ImmoPlus.Api.Models.Candidature", b =>
@@ -416,6 +1254,17 @@ namespace ImmoPlus.Api.Migrations
                     b.Navigation("Locataire");
                 });
 
+            modelBuilder.Entity("ImmoPlus.Api.Models.DemandeComplement", b =>
+                {
+                    b.HasOne("ImmoPlus.Api.Models.Candidature", "Candidature")
+                        .WithMany("DemandesComplement")
+                        .HasForeignKey("CandidatureId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Candidature");
+                });
+
             modelBuilder.Entity("ImmoPlus.Api.Models.Document", b =>
                 {
                     b.HasOne("ImmoPlus.Api.Models.Candidature", "Candidature")
@@ -425,6 +1274,25 @@ namespace ImmoPlus.Api.Migrations
                         .IsRequired();
 
                     b.Navigation("Candidature");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.Favori", b =>
+                {
+                    b.HasOne("ImmoPlus.Api.Models.Appartement", "Appartement")
+                        .WithMany("Favoris")
+                        .HasForeignKey("AppartementId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("ImmoPlus.Api.Models.Utilisateur", "Utilisateur")
+                        .WithMany()
+                        .HasForeignKey("UtilisateurId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Appartement");
+
+                    b.Navigation("Utilisateur");
                 });
 
             modelBuilder.Entity("ImmoPlus.Api.Models.FinancementLocation", b =>
@@ -447,6 +1315,17 @@ namespace ImmoPlus.Api.Migrations
                         .IsRequired();
 
                     b.Navigation("Candidature");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.Indisponibilite", b =>
+                {
+                    b.HasOne("ImmoPlus.Api.Models.Appartement", "Appartement")
+                        .WithMany("Indisponibilites")
+                        .HasForeignKey("AppartementId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Appartement");
                 });
 
             modelBuilder.Entity("ImmoPlus.Api.Models.Location", b =>
@@ -475,6 +1354,17 @@ namespace ImmoPlus.Api.Migrations
                     b.Navigation("Locataire");
                 });
 
+            modelBuilder.Entity("ImmoPlus.Api.Models.Loyer", b =>
+                {
+                    b.HasOne("ImmoPlus.Api.Models.Location", "Location")
+                        .WithMany("Loyers")
+                        .HasForeignKey("LocationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Location");
+                });
+
             modelBuilder.Entity("ImmoPlus.Api.Models.Mensualite", b =>
                 {
                     b.HasOne("ImmoPlus.Api.Models.FinancementLocation", "FinancementLocation")
@@ -486,8 +1376,43 @@ namespace ImmoPlus.Api.Migrations
                     b.Navigation("FinancementLocation");
                 });
 
+            modelBuilder.Entity("ImmoPlus.Api.Models.Message", b =>
+                {
+                    b.HasOne("ImmoPlus.Api.Models.Utilisateur", "Auteur")
+                        .WithMany()
+                        .HasForeignKey("AuteurId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ImmoPlus.Api.Models.Reservation", "Reservation")
+                        .WithMany("Messages")
+                        .HasForeignKey("ReservationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Auteur");
+
+                    b.Navigation("Reservation");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.NotificationSms", b =>
+                {
+                    b.HasOne("ImmoPlus.Api.Models.Utilisateur", "Utilisateur")
+                        .WithMany()
+                        .HasForeignKey("UtilisateurId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Utilisateur");
+                });
+
             modelBuilder.Entity("ImmoPlus.Api.Models.Paiement", b =>
                 {
+                    b.HasOne("ImmoPlus.Api.Models.Loyer", "Loyer")
+                        .WithMany("Paiements")
+                        .HasForeignKey("LoyerId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("ImmoPlus.Api.Models.Mensualite", "Mensualite")
                         .WithMany("Paiements")
                         .HasForeignKey("MensualiteId")
@@ -498,9 +1423,59 @@ namespace ImmoPlus.Api.Migrations
                         .HasForeignKey("ReservationId")
                         .OnDelete(DeleteBehavior.Restrict);
 
+                    b.Navigation("Loyer");
+
                     b.Navigation("Mensualite");
 
                     b.Navigation("Reservation");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.PhotoAppartement", b =>
+                {
+                    b.HasOne("ImmoPlus.Api.Models.Appartement", "Appartement")
+                        .WithMany("Photos")
+                        .HasForeignKey("AppartementId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Appartement");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.PhotoEtatDesLieux", b =>
+                {
+                    b.HasOne("ImmoPlus.Api.Models.Utilisateur", "Auteur")
+                        .WithMany()
+                        .HasForeignKey("AuteurId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ImmoPlus.Api.Models.Reservation", "Reservation")
+                        .WithMany("PhotosEtatDesLieux")
+                        .HasForeignKey("ReservationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Auteur");
+
+                    b.Navigation("Reservation");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.PieceIdentite", b =>
+                {
+                    b.HasOne("ImmoPlus.Api.Models.Utilisateur", "DecidePar")
+                        .WithMany()
+                        .HasForeignKey("DecideParId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("ImmoPlus.Api.Models.Utilisateur", "Utilisateur")
+                        .WithMany()
+                        .HasForeignKey("UtilisateurId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("DecidePar");
+
+                    b.Navigation("Utilisateur");
                 });
 
             modelBuilder.Entity("ImmoPlus.Api.Models.Reservation", b =>
@@ -522,20 +1497,84 @@ namespace ImmoPlus.Api.Migrations
                     b.Navigation("Locataire");
                 });
 
+            modelBuilder.Entity("ImmoPlus.Api.Models.Signalement", b =>
+                {
+                    b.HasOne("ImmoPlus.Api.Models.Utilisateur", "Auteur")
+                        .WithMany()
+                        .HasForeignKey("AuteurId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("ImmoPlus.Api.Models.Utilisateur", "TraitePar")
+                        .WithMany()
+                        .HasForeignKey("TraiteParId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("Auteur");
+
+                    b.Navigation("TraitePar");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.TransactionMobile", b =>
+                {
+                    b.HasOne("ImmoPlus.Api.Models.Paiement", "Paiement")
+                        .WithMany()
+                        .HasForeignKey("PaiementId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("ImmoPlus.Api.Models.Reservation", "Reservation")
+                        .WithMany("TransactionsMobiles")
+                        .HasForeignKey("ReservationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ImmoPlus.Api.Models.Utilisateur", "Utilisateur")
+                        .WithMany()
+                        .HasForeignKey("UtilisateurId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Paiement");
+
+                    b.Navigation("Reservation");
+
+                    b.Navigation("Utilisateur");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.Visite", b =>
+                {
+                    b.HasOne("ImmoPlus.Api.Models.Candidature", "Candidature")
+                        .WithMany("Visites")
+                        .HasForeignKey("CandidatureId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Candidature");
+                });
+
             modelBuilder.Entity("ImmoPlus.Api.Models.Appartement", b =>
                 {
                     b.Navigation("Candidatures");
 
+                    b.Navigation("Favoris");
+
+                    b.Navigation("Indisponibilites");
+
                     b.Navigation("Locations");
+
+                    b.Navigation("Photos");
 
                     b.Navigation("Reservations");
                 });
 
             modelBuilder.Entity("ImmoPlus.Api.Models.Candidature", b =>
                 {
+                    b.Navigation("DemandesComplement");
+
                     b.Navigation("Documents");
 
                     b.Navigation("Garant");
+
+                    b.Navigation("Visites");
                 });
 
             modelBuilder.Entity("ImmoPlus.Api.Models.FinancementLocation", b =>
@@ -546,6 +1585,13 @@ namespace ImmoPlus.Api.Migrations
             modelBuilder.Entity("ImmoPlus.Api.Models.Location", b =>
                 {
                     b.Navigation("FinancementLocation");
+
+                    b.Navigation("Loyers");
+                });
+
+            modelBuilder.Entity("ImmoPlus.Api.Models.Loyer", b =>
+                {
+                    b.Navigation("Paiements");
                 });
 
             modelBuilder.Entity("ImmoPlus.Api.Models.Mensualite", b =>
@@ -555,7 +1601,15 @@ namespace ImmoPlus.Api.Migrations
 
             modelBuilder.Entity("ImmoPlus.Api.Models.Reservation", b =>
                 {
+                    b.Navigation("Avis");
+
+                    b.Navigation("Messages");
+
                     b.Navigation("Paiements");
+
+                    b.Navigation("PhotosEtatDesLieux");
+
+                    b.Navigation("TransactionsMobiles");
                 });
 
             modelBuilder.Entity("ImmoPlus.Api.Models.Utilisateur", b =>

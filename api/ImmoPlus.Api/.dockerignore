@@ -1,0 +1,10 @@
+bin/
+obj/
+**/bin/
+**/obj/
+*.db
+*.db-shm
+*.db-wal
+Storage/documents/
+Storage/photos/
+sms.env

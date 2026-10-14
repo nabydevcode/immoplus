@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/api/">
     <Project Path="api/ImmoPlus.Api/ImmoPlus.Api.csproj" />
+    <Project Path="api/ImmoPlus.Api.Tests/ImmoPlus.Api.Tests.csproj" />
   </Folder>
   <Folder Name="/web/">
     <Project Path="web/ImmoPlus.Web/ImmoPlus.Web.csproj" />

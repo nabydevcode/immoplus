@@ -18,4 +18,6 @@ public class Candidature
     public Appartement? Appartement { get; set; }
     public Garant? Garant { get; set; }
     public List<Document> Documents { get; set; } = new();
+    public List<DemandeComplement> DemandesComplement { get; set; } = new();
+    public List<Visite> Visites { get; set; } = new();
 }

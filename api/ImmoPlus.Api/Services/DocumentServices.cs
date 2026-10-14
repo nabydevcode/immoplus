@@ -14,11 +14,13 @@ public class DocumentServices
 
     private readonly AppDbContext _context;
     private readonly IWebHostEnvironment _environnement;
+    private readonly NotificationServices _notificationServices;
 
-    public DocumentServices(AppDbContext context, IWebHostEnvironment environnement)
+    public DocumentServices(AppDbContext context, IWebHostEnvironment environnement, NotificationServices notificationServices)
     {
         _context = context;
         _environnement = environnement;
+        _notificationServices = notificationServices;
     }
 
     private string DossierRacine => Path.Combine(_environnement.ContentRootPath, "Storage", "documents");
@@ -46,7 +48,7 @@ public class DocumentServices
         {
             throw new InvalidOperationException("TypeDocument invalide");
         }
-        if (fichier.Length == 0)
+        if (fichier is null || fichier.Length == 0)
         {
             throw new InvalidOperationException("Le fichier est vide");
         }
@@ -56,7 +58,8 @@ public class DocumentServices
         }
 
         var extension = Path.GetExtension(fichier.FileName).ToLowerInvariant();
-        if (!ExtensionsAutorisees.Contains(extension))
+        var contenuValide = extension == ".pdf" ? await EtatDesLieuxServices.EstPdfAsync(fichier) : await EtatDesLieuxServices.EstImageAsync(fichier);
+        if (!ExtensionsAutorisees.Contains(extension) || !contenuValide)
         {
             throw new InvalidOperationException("Type de fichier non autorisé. Formats acceptés : PDF, JPG, PNG");
         }
@@ -86,6 +89,7 @@ public class DocumentServices
         await _context.Documents.AddAsync(document);
         await _context.SaveChangesAsync();
 
+        await PrevenirSiDossierCompleteAsync(candidatureId);
         return VersDto(document);
     }
 
@@ -135,6 +139,33 @@ public class DocumentServices
 
         Stream flux = new FileStream(cheminComplet, FileMode.Open, FileAccess.Read);
         return (flux, document.NomFichierOriginal);
+    }
+
+    /// <summary>Si ce dépôt complète une demande de pièces du bailleur, le prévient (une seule fois par demande).</summary>
+    private async Task PrevenirSiDossierCompleteAsync(int candidatureId)
+    {
+        var demandes = await _context.DemandesComplement
+            .Where(d => d.CandidatureId == candidatureId && !d.CompletNotifie)
+            .ToListAsync();
+        if (demandes.Count == 0)
+        {
+            return;
+        }
+
+        var candidature = await _context.Candidatures
+            .Include(c => c.Documents)
+            .Include(c => c.Locataire)
+            .Include(c => c.Appartement).ThenInclude(a => a!.Bailleur)
+            .FirstAsync(c => c.Id == candidatureId);
+        var completes = demandes.Where(d => d.EstComplete(candidature.Documents)).ToList();
+        if (completes.Count == 0)
+        {
+            return;
+        }
+
+        completes.ForEach(d => d.CompletNotifie = true);
+        await _context.SaveChangesAsync();
+        await _notificationServices.DossierCompleteAsync(candidature.Appartement!.Bailleur!, candidature, candidature.Appartement, candidature.Locataire!);
     }
 
     private static void VerifierAutorisationLecture(Candidature candidature, int utilisateurId, RoleUtilisateur role)

@@ -5,6 +5,7 @@ public class PaiementDto
     // Exactement un des deux doit être renseigné.
     public int? MensualiteId { get; set; }
     public int? ReservationId { get; set; }
+    public int? LoyerId { get; set; }
 
     public decimal Montant { get; set; }
     public DateTime DatePaiement { get; set; }

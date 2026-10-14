@@ -8,13 +8,26 @@
 
   <ItemGroup>
     <PackageReference Include="BCrypt.Net-Next" Version="4.2.0" />
+    <!-- Exports Excel (admin) : licence MIT (dépendances MIT, SixLabors.Fonts 1.0 sous Apache-2.0). -->
+    <PackageReference Include="ClosedXML" Version="0.105.1" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
+    <!-- PDF (quittances, reçus, contrat, état des lieux) : licence Community, gratuite sous 1 M USD de chiffre d'affaires annuel. -->
+    <PackageReference Include="QuestPDF" Version="2026.9.1" />
+    <!-- Photos (réorientation, retrait EXIF, redimensionnement, miniatures) : licence MIT. Binaires natifs Linux sans dépendance système (Docker). -->
+    <PackageReference Include="SkiaSharp" Version="4.153.1" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.153.1" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Sauvegardes de la base produites par l'API : ni surveillées par dotnet watch, ni publiées. -->
+    <None Remove="Sauvegardes/**" />
+    <Watch Remove="Sauvegardes/**" />
   </ItemGroup>
 
 </Project>

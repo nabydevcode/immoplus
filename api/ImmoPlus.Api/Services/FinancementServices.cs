@@ -25,6 +25,10 @@ public class FinancementServices
         {
             throw new NotFoundException("Cette location n'existe pas");
         }
+        if (location.Statut != StatutLocation.EnCours)
+        {
+            throw new ConflictException("Cette location n'est plus en cours : impossible de lui associer un financement");
+        }
 
         var financementExiste = await _context.FinancementLocations.AnyAsync(f => f.LocationId == dto.LocationId);
         if (financementExiste)
@@ -72,8 +76,8 @@ public class FinancementServices
             throw new ConflictException("L'apport initial couvre déjà la totalité de la durée exigée");
         }
 
-        var mensualiteBase = montantARembourser / nombreMensualites;
-        var montantMensualite = mensualiteBase * (1 + tauxFrais);
+        // Montants au franc près (le GNF n'a pas de centimes) : voir Echeancier pour la dernière mensualité.
+        var (montantMensualite, _) = Echeancier(montantARembourser, tauxFrais, nombreMensualites);
 
         return new FinancementLocation
         {
@@ -84,14 +88,28 @@ public class FinancementServices
             MontantARembourser = montantARembourser,
             TauxFrais = tauxFrais,
             NombreMensualites = nombreMensualites,
-            MontantMensualite = Math.Round(montantMensualite, 2),
+            MontantMensualite = montantMensualite,
             Statut = StatutFinancement.EnAttenteValidation
         };
     }
 
+    /// <summary>
+    /// Mensualités arrondies au franc (MidpointRounding.AwayFromZero) : le total dû (capital + frais) est arrondi au franc,
+    /// chaque mensualité aussi, et la dernière absorbe l'écart pour que leur somme soit exactement ce total.
+    /// </summary>
+    public static (decimal Mensualite, decimal Derniere) Echeancier(decimal montantARembourser, decimal tauxFrais, int nombreMensualites)
+    {
+        var totalDu = Math.Round(montantARembourser * (1 + tauxFrais), 0, MidpointRounding.AwayFromZero);
+        var mensualite = Math.Round(totalDu / nombreMensualites, 0, MidpointRounding.AwayFromZero);
+        return (mensualite, totalDu - mensualite * (nombreMensualites - 1));
+    }
+
     public async Task<List<FinancementLocationResponseDto>> ListerFinancementLoctions(int utilisateurId, RoleUtilisateur role)
     {
-        var requete = _context.FinancementLocations.AsNoTracking().Include(f => f.Location).AsQueryable();
+        var requete = _context.FinancementLocations.AsNoTracking()
+            .Include(f => f.Location).ThenInclude(l => l!.Locataire)
+            .Include(f => f.Location).ThenInclude(l => l!.Appartement)
+            .AsQueryable();
 
         if (role == RoleUtilisateur.Locataire)
         {
@@ -102,24 +120,24 @@ public class FinancementServices
             requete = requete.Where(f => f.Location!.Appartement!.BailleurId == utilisateurId);
         }
 
-        var financements = await requete.ToListAsync();
+        var financements = await requete.Include(f => f.Mensualites).ThenInclude(m => m.Paiements).ToListAsync();
         return financements.Select(VersDto).ToList();
     }
 
-    public async Task<FinancementLocationResponseDto> RechercherFinancement(int id)
+    private static FinancementLocationResponseDto VersDto(FinancementLocation f)
     {
-        var financement = await _context.FinancementLocations.FirstOrDefaultAsync(f => f.Id == id);
-        if (financement is null)
-        {
-            throw new NotFoundException("Ce financement n'existe pas");
-        }
-        return VersDto(financement);
+        var dto = VersDtoSansBilan(f);
+        SuiviRetards.RemplirBilan(dto, f.Mensualites, DateTime.UtcNow);
+        return dto;
     }
 
-    private static FinancementLocationResponseDto VersDto(FinancementLocation f) => new()
+    private static FinancementLocationResponseDto VersDtoSansBilan(FinancementLocation f) => new()
     {
         Id = f.Id,
         LocationId = f.LocationId,
+        CandidatureId = f.Location?.CandidatureId,
+        LocataireNom = f.Location?.Locataire?.Nom ?? "",
+        AppartementAdresse = f.Location?.Appartement?.Adresse ?? "",
         MontantTotal = f.MontantTotal,
         DureeMois = f.DureeMois,
         ApportInitial = f.ApportInitial,
