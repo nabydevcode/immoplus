@@ -9,29 +9,58 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Npgsql;
 
 /// <summary>
-/// API complète, en mémoire (TestServer), sur une base SQLite propre à cette instance, dans un dossier temporaire
-/// (jamais api/ImmoPlus.Api/immoplus.db). Les emails partent vers un faux serveur SMTP local, les services planifiés
-/// de l'API (rappels, sauvegarde…) sont retirés : les tests les déclenchent eux-mêmes (POST /rappels/executer).
+/// API complète, en mémoire (TestServer), sur une base PostgreSQL propre à cette instance (« immoplus_test_… », créée
+/// puis supprimée ; jamais la base réelle « immoplus »), et un dossier temporaire pour Storage/. Les emails partent vers
+/// un faux serveur SMTP local, les services planifiés de l'API (rappels, boîte d'envoi…) sont retirés : les tests les
+/// déclenchent eux-mêmes (POST /rappels/executer, EnvoyerMessagesAsync / EmailsPourAsync pour la boîte d'envoi).
+/// <see cref="Creer"/> : réglages supplémentaires (S3, Redis…) et « seconde instance » sur la même base qu'une autre.
 /// </summary>
 public class ImmoPlusFactory : WebApplicationFactory<Program>
 {
     public const string SecretWebhook = "secret-webhook-des-tests";
+    private const string PrefixeBase = "immoplus_test_";
 
     private readonly string _dossier = Path.Combine(Path.GetTempPath(), "immoplus-tests", Guid.NewGuid().ToString("N"));
+    private readonly string _nomBase;
+    private readonly bool _proprietaireBase;
+    private readonly IReadOnlyDictionary<string, string?> _reglages;
 
-    public ImmoPlusFactory()
+    public ImmoPlusFactory() : this(null, null)
+    {
+    }
+
+    private ImmoPlusFactory(IReadOnlyDictionary<string, string?>? reglages, ImmoPlusFactory? memeBaseQue)
     {
         Directory.CreateDirectory(_dossier);
-        CheminBase = Path.Combine(_dossier, "immoplus-tests.db");
+        _reglages = reglages ?? new Dictionary<string, string?>();
+        if (memeBaseQue is null)
+        {
+            _nomBase = PrefixeBase + Guid.NewGuid().ToString("N");
+            _proprietaireBase = true;
+            ChaineConnexion = ServeurPostgresTests.CreerBaseAsync(_nomBase).GetAwaiter().GetResult();
+        }
+        else
+        {
+            // Seconde « instance » de l'API : même base, son propre serveur, ses propres dossier et mémoire.
+            _nomBase = memeBaseQue._nomBase;
+            ChaineConnexion = memeBaseQue.ChaineConnexion;
+        }
     }
+
+    /// <param name="reglages">Réglages ajoutés ou remplacés (ex. Stockage:Mode = S3, Redis:Connexion).</param>
+    /// <param name="memeBaseQue">Partage la base de cette instance (simule une seconde instance de l'API) ; elle seule la supprime.</param>
+    public static ImmoPlusFactory Creer(IReadOnlyDictionary<string, string?>? reglages = null, ImmoPlusFactory? memeBaseQue = null) =>
+        new(reglages, memeBaseQue);
+
+    /// <summary>Dossier servant de racine de contenu (Storage/ en mode Disque).</summary>
+    public string Dossier => _dossier;
 
     public FauxServeurSmtp Smtp { get; } = new();
 
-    public string CheminBase { get; }
-
-    private string ChaineConnexion => $"Data Source={CheminBase}";
+    private string ChaineConnexion { get; }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -59,6 +88,10 @@ public class ImmoPlusFactory : WebApplicationFactory<Program>
             ["Logging:LogLevel:Default"] = "Warning",
             ["Logging:LogLevel:Microsoft.EntityFrameworkCore"] = "Warning"
         };
+        foreach (var (cle, valeur) in _reglages)
+        {
+            parametres[cle] = valeur;
+        }
         foreach (var (cle, valeur) in parametres)
         {
             builder.UseSetting(cle, valeur);
@@ -75,9 +108,9 @@ public class ImmoPlusFactory : WebApplicationFactory<Program>
             {
                 services.Remove(descripteur);
             }
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite(ChaineConnexion));
+            services.AddDbContext<AppDbContext>(options => AppDbContext.Configurer(options, ChaineConnexion));
 
-            // Services planifiés de l'API (rappels, sauvegarde…) retirés : pas de traitement en tâche de fond pendant les tests.
+            // Services planifiés de l'API (rappels, boîte d'envoi…) retirés : pas de traitement en tâche de fond pendant les tests.
             var assemblageApi = typeof(Program).Assembly;
             foreach (var descripteur in services.Where(d => d.ServiceType == typeof(IHostedService)
                          && (d.ImplementationType?.Assembly == assemblageApi
@@ -93,7 +126,7 @@ public class ImmoPlusFactory : WebApplicationFactory<Program>
         var hote = base.CreateHost(builder);
         using var scope = hote.Services.CreateScope();
         var chaine = scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.GetConnectionString() ?? "";
-        if (!chaine.Contains(_dossier))
+        if (!chaine.Contains(_nomBase))
         {
             throw new InvalidOperationException($"Les tests doivent utiliser la base temporaire, pas « {chaine} »");
         }
@@ -115,11 +148,28 @@ public class ImmoPlusFactory : WebApplicationFactory<Program>
         return await lecture(scope.ServiceProvider.GetRequiredService<AppDbContext>());
     }
 
+    /// <summary>Un passage du service d'envoi : tous les messages dus de la boîte d'envoi partent (ou échouent).</summary>
+    public async Task<int> EnvoyerMessagesAsync()
+    {
+        using var scope = Services.CreateScope();
+        return await scope.ServiceProvider.GetRequiredService<ImmoPlus.Api.Services.EnvoiMessagesServices>().TraiterToutAsync();
+    }
+
+    /// <summary>Emails reçus par ce destinataire, après envoi des messages en attente de la boîte d'envoi.</summary>
+    public async Task<IReadOnlyList<EmailCapture>> EmailsPourAsync(string destinataire)
+    {
+        await EnvoyerMessagesAsync();
+        return Smtp.EmailsPour(destinataire);
+    }
+
     public override async ValueTask DisposeAsync()
     {
         await base.DisposeAsync();
         await Smtp.DisposeAsync();
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        if (_proprietaireBase)
+        {
+            await ServeurPostgresTests.SupprimerBaseAsync(_nomBase, ChaineConnexion);
+        }
         try
         {
             Directory.Delete(_dossier, recursive: true);

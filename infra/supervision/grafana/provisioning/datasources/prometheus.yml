@@ -1,0 +1,12 @@
+# Source de données provisionnée au démarrage de Grafana (profil « supervision »).
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus-immoplus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 10s

@@ -5,8 +5,9 @@ import Loyers from "../../components/financement/Loyers";
 import FinLocation from "../../components/financement/FinLocation";
 import { ChampRecherche } from "../../components/candidatures/RechercheCandidature";
 import { extraireNumero, filtrerRecherche } from "../../components/candidatures/recherche";
-import { Badge, EnTete, EtatListe, Onglets, Tableau } from "../../components/admin/ui";
-import { formaterDate, formaterReference, useChargement } from "../../components/admin/outils";
+import { Badge, EnTete, EtatListe, Onglets, Pagination, Tableau } from "../../components/admin/ui";
+import { formaterDate, formaterReference } from "../../components/admin/outils";
+import { texteRecherche, useListeAOnglets, useValeurDifferee } from "../../components/admin/pagination";
 import BoutonPdf from "../../components/documents/BoutonPdf";
 import { contratLocation } from "../../components/documents/pdf";
 import type { LocationDto } from "../../types/models";
@@ -17,25 +18,45 @@ const statuts = {
   Resiliee: { label: "Résiliée", ton: "danger" },
 } as const;
 
+type Filtre = "EnCours" | "Toutes";
+const ONGLETS = ["EnCours", "Toutes"] as const;
+/** Onglet → paramètre de l'API (location/lister?statut=…). */
+const requeteOnglet = (f: Filtre) => (f === "EnCours" ? "statut=EnCours" : "");
+const LOCAL = {
+  dansOnglet: (f: Filtre, l: LocationDto) => f === "Toutes" || l.statut === "EnCours",
+  // Recherche (tous statuts) : par n° de location ou du dossier d'origine, nom du locataire ou adresse.
+  rechercher: (liste: LocationDto[], texte: string) =>
+    filtrerRecherche(
+      liste,
+      texte,
+      (l) => [l.id, l.candidatureId],
+      (l) => [l.locataireNom, l.appartementAdresse],
+    ) ?? liste,
+};
+
 export default function Locations() {
-  const { donnees, chargement, erreur, recharger } = useChargement<LocationDto[]>("location/lister");
-  const [filtre, setFiltre] = useState<"EnCours" | "Toutes">("EnCours");
+  const [filtre, setFiltre] = useState<Filtre>("EnCours");
   const [params] = useSearchParams();
   const q = params.get("q") ?? "";
   const [ouverteChoisie, setOuverte] = useState<number | null | undefined>(undefined);
-
-  const locations = donnees ?? [];
-  const enCours = locations.filter((l) => l.statut === "EnCours");
   const [recherche, setRecherche] = useState(q);
-  // Recherche (tous statuts) : par n° de location ou du dossier d'origine, nom du locataire ou adresse.
   const numero = extraireNumero(recherche);
-  const resultats = filtrerRecherche(
-    locations,
-    recherche,
-    (l) => [l.id, l.candidatureId],
-    (l) => [l.locataireNom, l.appartementAdresse],
-  );
-  const affichees = resultats ?? (filtre === "EnCours" ? enCours : locations);
+  // Recherche côté serveur (q), après une courte pause de saisie.
+  const rechercheEnvoyee = useValeurDifferee(texteRecherche(recherche));
+  const liste = useListeAOnglets<LocationDto, Filtre>({
+    base: "location/lister",
+    onglet: filtre,
+    onglets: ONGLETS,
+    requeteOnglet,
+    recherche: rechercheEnvoyee,
+    mode: "pages",
+    local: LOCAL,
+  });
+  const { chargement, erreur, recharger, compteurs } = liste;
+  const enRecherche = rechercheEnvoyee !== "";
+  const affichees = liste.elements;
+  const resultats = enRecherche ? affichees : null;
+  const nombre = (f: Filtre) => (compteurs[f] !== undefined ? ` (${compteurs[f]})` : "");
   // Lien direct (?q=référence, depuis le tableau de bord) : la page s'ouvre filtrée sur la référence,
   // et l'élément s'ouvre tout seul s'il est le seul résultat, tant que l'utilisateur n'a rien ouvert lui-même.
   const ouverte = ouverteChoisie !== undefined ? ouverteChoisie : q && resultats?.length === 1 ? resultats[0].id : null;
@@ -61,13 +82,13 @@ export default function Locations() {
           libelle="Rechercher une location"
         />
       </form>
-      {!resultats && (
+      {!enRecherche && (
         <Onglets
           valeur={filtre}
           onChange={setFiltre}
           options={[
-            { valeur: "EnCours", label: `En cours (${enCours.length})` },
-            { valeur: "Toutes", label: `Toutes (${locations.length})` },
+            { valeur: "EnCours", label: `En cours${nombre("EnCours")}` },
+            { valeur: "Toutes", label: `Toutes${nombre("Toutes")}` },
           ]}
         />
       )}
@@ -139,6 +160,7 @@ export default function Locations() {
             </Fragment>
           ))}
         </Tableau>
+        <Pagination page={liste.page} totalPages={liste.totalPages} onChange={liste.setPage} total={liste.total} />
       </EtatListe>
     </>
   );

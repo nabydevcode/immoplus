@@ -1,0 +1,13 @@
+# nginx du profil « echelle » : build de production du client React (VITE_API_URL=/api) + configuration du répartiteur.
+# Contexte de construction : web/immoplus-web-react (voir docker-compose.yml).
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+ENV VITE_API_URL=/api
+RUN npm run build
+
+FROM nginx:stable-alpine
+COPY --from=build /app/dist /usr/share/nginx/html
+# La configuration (infra/echelle/nginx.conf) est montée en lecture seule par compose : modifiable sans reconstruire.

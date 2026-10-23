@@ -128,43 +128,32 @@ public static class TraitementImages
         return donnees.ToArray();
     }
 
-    /// <summary>JPEG écrit dans un fichier temporaire puis renommé : jamais de fichier à moitié écrit servi au client.</summary>
-    public static async Task EnregistrerJpegAsync(SKBitmap image, string chemin, int qualite = QualiteJpeg, CancellationToken annulation = default)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(chemin)!);
-        var temporaire = $"{chemin}.{Guid.NewGuid():N}.tmp";
-        try
-        {
-            await File.WriteAllBytesAsync(temporaire, EncoderJpeg(image, qualite), annulation);
-            File.Move(temporaire, chemin, overwrite: true);
-        }
-        finally
-        {
-            if (File.Exists(temporaire))
-            {
-                File.Delete(temporaire);
-            }
-        }
-    }
+    /// <summary>Photo réencodée (JPEG sans métadonnées), prête à être enregistrée par IStockageFichiers.</summary>
+    public static byte[] Jpeg(SKBitmap image, int qualite = QualiteJpeg) => EncoderJpeg(image, qualite);
 
-    /// <summary>Miniature (480 px au plus, sans recadrage) d'une image déjà chargée.</summary>
-    public static async Task EnregistrerMiniatureAsync(SKBitmap image, string chemin, CancellationToken annulation = default)
+    /// <summary>Miniature (480 px au plus, sans recadrage) d'une image déjà chargée, en JPEG.</summary>
+    public static byte[] MiniatureJpeg(SKBitmap image)
     {
         var copie = image.Copy() ?? throw Illisible();
         using var miniature = Reduire(copie, TailleMiniature);
-        await EnregistrerJpegAsync(miniature, chemin, QualiteMiniature, annulation);
+        return EncoderJpeg(miniature, QualiteMiniature);
     }
 
     /// <summary>Miniature JPEG en mémoire (ex. pour les PDF) ; null si le fichier est absent ou illisible.</summary>
-    public static async Task<byte[]?> MiniatureJpegAsync(string cheminSource, int tailleMax = TailleMiniature, CancellationToken annulation = default)
+    public static async Task<byte[]?> MiniatureJpegAsync(IStockageFichiers stockage, string cle, int tailleMax = TailleMiniature,
+        CancellationToken annulation = default)
     {
         try
         {
-            await using var flux = File.OpenRead(cheminSource);
+            await using var flux = await stockage.OuvrirAsync(cle, annulation);
+            if (flux is null)
+            {
+                return null;
+            }
             using var image = await ChargerAsync(flux, tailleMax, annulation);
             return EncoderJpeg(image, QualiteMiniature);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or IOException)
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or Amazon.Runtime.AmazonServiceException)
         {
             return null;
         }

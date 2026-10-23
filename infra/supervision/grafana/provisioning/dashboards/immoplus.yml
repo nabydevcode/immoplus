@@ -1,0 +1,10 @@
+# Tableaux de bord chargés depuis infra/supervision/grafana/tableaux (montés en lecture seule).
+apiVersion: 1
+providers:
+  - name: immoplus
+    folder: ImmoPlus
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/tableaux

@@ -1,0 +1,25 @@
+# Configuration de Garage (stockage objet compatible S3) pour ImmoPlus — un seul nœud, sans secret :
+# rpc_secret et admin_token viennent des variables GARAGE_RPC_SECRET / GARAGE_ADMIN_TOKEN (infra/garage.env, non versionné).
+# Doc : https://garagehq.deuxfleurs.fr/documentation/reference-manual/configuration/
+
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+# SQLite : plus lent que LMDB mais robuste en cas d'arrêt brutal (volume de données modeste).
+db_engine = "sqlite"
+# Instantané automatique des métadonnées (restauration possible si la base de métadonnées s'abîme).
+metadata_auto_snapshot_interval = "6h"
+
+# Un seul nœud : une seule copie de chaque objet (la sécurité vient de la sauvegarde quotidienne, voir sauvegarde-fichiers).
+replication_factor = 1
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+
+[s3_api]
+# Région attendue par le client S3 de l'API (Stockage:S3:Region) ; accès « path-style » (http://garage:9000/immoplus/cle).
+s3_region = "us-east-1"
+api_bind_addr = "[::]:9000"
+
+[admin]
+# API d'administration (jeton GARAGE_ADMIN_TOKEN) : utilisée par garage-init, jamais exposée hors du réseau Docker.
+api_bind_addr = "[::]:3903"

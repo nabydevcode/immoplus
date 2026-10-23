@@ -47,9 +47,17 @@ public class FavoriServices
     public async Task RetirerAsync(int utilisateurId, int appartementId) =>
         await _context.Favoris.Where(f => f.UtilisateurId == utilisateurId && f.AppartementId == appartementId).ExecuteDeleteAsync();
 
-    /// <summary>Du plus récent au plus ancien, y compris les logements devenus indisponibles (champ disponible).</summary>
-    public async Task<List<AppartementResponseDto>> ListerAsync(int utilisateurId, RoleUtilisateur role) =>
-        await _appartementServices.ListerParIdsAsync(await IdsAsync(utilisateurId), utilisateurId, role);
+    /// <summary>Du plus récent au plus ancien (paginé), y compris les logements devenus indisponibles (champ disponible).</summary>
+    public async Task<PagedResultDto<AppartementResponseDto>> ListerAsync(int utilisateurId, RoleUtilisateur role, Pagination pagination)
+    {
+        var (ids, total) = await _context.Favoris.AsNoTracking()
+            .Where(f => f.UtilisateurId == utilisateurId)
+            .OrderByDescending(f => f.DateCreation).ThenByDescending(f => f.AppartementId)
+            .Select(f => f.AppartementId)
+            .PageAsync(pagination);
+        return PagedResultDto<AppartementResponseDto>.Creer(
+            ids.Count == 0 ? [] : await _appartementServices.ListerParIdsAsync(ids, utilisateurId, role), pagination, total);
+    }
 
     public async Task<List<int>> IdsAsync(int utilisateurId) =>
         await _context.Favoris.AsNoTracking()

@@ -1,0 +1,1231 @@
+{
+ "uid": "immoplus-api",
+ "title": "ImmoPlus — API",
+ "tags": [
+  "immoplus"
+ ],
+ "timezone": "browser",
+ "schemaVersion": 39,
+ "editable": false,
+ "graphTooltip": 1,
+ "refresh": "10s",
+ "time": {
+  "from": "now-30m",
+  "to": "now"
+ },
+ "templating": {
+  "list": [
+   {
+    "name": "job",
+    "label": "Environnement",
+    "type": "query",
+    "datasource": {
+     "type": "prometheus",
+     "uid": "prometheus-immoplus"
+    },
+    "query": {
+     "query": "label_values(up{job=~\"immoplus-api.*\"}, job)",
+     "refId": "job"
+    },
+    "definition": "label_values(up{job=~\"immoplus-api.*\"}, job)",
+    "includeAll": true,
+    "multi": true,
+    "current": {
+     "text": "All",
+     "value": "$__all"
+    },
+    "refresh": 2,
+    "allValue": "immoplus-api.*"
+   },
+   {
+    "name": "instance",
+    "label": "Instance",
+    "type": "query",
+    "datasource": {
+     "type": "prometheus",
+     "uid": "prometheus-immoplus"
+    },
+    "query": {
+     "query": "label_values(up{job=~\"$job\"}, instance)",
+     "refId": "instance"
+    },
+    "definition": "label_values(up{job=~\"$job\"}, instance)",
+    "includeAll": true,
+    "multi": true,
+    "current": {
+     "text": "All",
+     "value": "$__all"
+    },
+    "refresh": 2,
+    "allValue": ".*"
+   }
+  ]
+ },
+ "panels": [
+  {
+   "id": 1,
+   "type": "row",
+   "title": "Vue d'ensemble",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 24,
+    "h": 1
+   },
+   "panels": []
+  },
+  {
+   "id": 2,
+   "type": "stat",
+   "title": "Requêtes / s",
+   "description": "Toutes instances, hors /metriques et /sante.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 1,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "sum(rate(http_server_request_duration_seconds_count{job=~\"$job\", instance=~\"$instance\", http_route!~\"/metriques|/sante/.*\"}[$__rate_interval]))",
+     "legendFormat": ""
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "area"
+   }
+  },
+  {
+   "id": 3,
+   "type": "stat",
+   "title": "Latence p95 (toutes routes)",
+   "description": "Objectif : < 0,5 s.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 4,
+    "y": 1,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\", http_route!~\"/metriques|/sante/.*\"}[$__rate_interval])))",
+     "legendFormat": ""
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 0.3
+       },
+       {
+        "color": "red",
+        "value": 0.5
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "area"
+   }
+  },
+  {
+   "id": 4,
+   "type": "stat",
+   "title": "Erreurs (5xx, 499)",
+   "description": "Part des réponses 5xx + 499. Objectif : < 1 %. Base saturée = 503 avec Retry-After (depuis le 22/10/2026 ; avant : 400, d'où l'ancien comptage des 400, retiré) ; 499 = client parti avant la réponse (délai dépassé). Détail par code : panneau « Réponses par code HTTP ».",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 1,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "(sum(rate(http_server_request_duration_seconds_count{job=~\"$job\", instance=~\"$instance\", http_route!~\"/metriques|/sante/.*\", http_response_status_code=~\"5..|499\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(http_server_request_duration_seconds_count{job=~\"$job\", instance=~\"$instance\", http_route!~\"/metriques|/sante/.*\"}[$__rate_interval])), 1e-9)",
+     "legendFormat": ""
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 0.005
+       },
+       {
+        "color": "red",
+        "value": 0.01
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "area"
+   }
+  },
+  {
+   "id": 5,
+   "type": "stat",
+   "title": "Instances en ligne",
+   "description": "Cibles Prometheus joignables (up = 1).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 1,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "sum(up{job=~\"$job\", instance=~\"$instance\"})",
+     "legendFormat": ""
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "area"
+   }
+  },
+  {
+   "id": 6,
+   "type": "stat",
+   "title": "Connexions temps réel (SignalR)",
+   "description": "Apparaît dès la première connexion SignalR.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 1,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "sum(signalr_server_active_connections{job=~\"$job\", instance=~\"$instance\"}) or vector(0)",
+     "legendFormat": ""
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "area"
+   }
+  },
+  {
+   "id": 7,
+   "type": "stat",
+   "title": "Boîte d'envoi en attente",
+   "description": "Emails/SMS pas encore envoyés (même valeur sur chaque instance : base commune).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 20,
+    "y": 1,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "max(immoplus_boite_envoi_en_attente{job=~\"$job\", instance=~\"$instance\"})",
+     "legendFormat": ""
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 50
+       },
+       {
+        "color": "red",
+        "value": 500
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "area"
+   }
+  },
+  {
+   "id": 8,
+   "type": "row",
+   "title": "Trafic et latence",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 5,
+    "w": 24,
+    "h": 1
+   },
+   "panels": []
+  },
+  {
+   "id": 9,
+   "type": "timeseries",
+   "title": "Requêtes / s par instance",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 6,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "sum by (instance) (rate(http_server_request_duration_seconds_count{job=~\"$job\", instance=~\"$instance\", http_route!~\"/metriques|/sante/.*\"}[$__rate_interval]))",
+     "legendFormat": "{{instance}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 10,
+   "type": "timeseries",
+   "title": "Latence p50 / p95 / p99 (toutes routes)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 6,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\", http_route!~\"/metriques|/sante/.*\"}[$__rate_interval])))",
+     "legendFormat": "p50"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "B",
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\", http_route!~\"/metriques|/sante/.*\"}[$__rate_interval])))",
+     "legendFormat": "p95"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "C",
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\", http_route!~\"/metriques|/sante/.*\"}[$__rate_interval])))",
+     "legendFormat": "p99"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 11,
+   "type": "timeseries",
+   "title": "Latence p95 par route (10 plus lentes)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 14,
+    "w": 12,
+    "h": 9
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "topk(10, histogram_quantile(0.95, sum by (le, http_request_method, http_route) (rate(http_server_request_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\", http_route!~\"/metriques|/sante/.*\"}[$__rate_interval]))))",
+     "legendFormat": "{{http_request_method}} {{http_route}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 12,
+   "type": "timeseries",
+   "title": "Réponses / s par code HTTP",
+   "description": "401/403/404/409 sont souvent normaux (règles métier) ; 429 = limitation des connexions ; 5xx = erreurs serveur.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 14,
+    "w": 12,
+    "h": 9
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "sum by (http_response_status_code) (rate(http_server_request_duration_seconds_count{job=~\"$job\", instance=~\"$instance\", http_route!~\"/metriques|/sante/.*\"}[$__rate_interval]))",
+     "legendFormat": "{{http_response_status_code}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 13,
+   "type": "table",
+   "title": "Routes : volume et latences (sur la période affichée)",
+   "description": "Une ligne par route. Les quantiles sont estimés à partir des seuils de l'histogramme (précision limitée entre deux seuils).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 23,
+    "w": 24,
+    "h": 10
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "sum by (http_request_method, http_route) (increase(http_server_request_duration_seconds_count{job=~\"$job\", instance=~\"$instance\", http_route!~\"/metriques|/sante/.*\"}[$__range]))",
+     "legendFormat": "requetes",
+     "instant": true,
+     "format": "table"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "B",
+     "expr": "histogram_quantile(0.5, sum by (le, http_request_method, http_route) (increase(http_server_request_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\", http_route!~\"/metriques|/sante/.*\"}[$__range])))",
+     "legendFormat": "p50",
+     "instant": true,
+     "format": "table"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "C",
+     "expr": "histogram_quantile(0.95, sum by (le, http_request_method, http_route) (increase(http_server_request_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\", http_route!~\"/metriques|/sante/.*\"}[$__range])))",
+     "legendFormat": "p95",
+     "instant": true,
+     "format": "table"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "D",
+     "expr": "histogram_quantile(0.99, sum by (le, http_request_method, http_route) (increase(http_server_request_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\", http_route!~\"/metriques|/sante/.*\"}[$__range])))",
+     "legendFormat": "p99",
+     "instant": true,
+     "format": "table"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {},
+   "transformations": [
+    {
+     "id": "merge",
+     "options": {}
+    },
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {
+       "Time": true
+      },
+      "renameByName": {
+       "http_request_method": "Méthode",
+       "http_route": "Route",
+       "Value #A": "Requêtes",
+       "Value #B": "p50 (s)",
+       "Value #C": "p95 (s)",
+       "Value #D": "p99 (s)"
+      }
+     }
+    },
+    {
+     "id": "sortBy",
+     "options": {
+      "sort": [
+       {
+        "field": "p95 (s)",
+        "desc": true
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": 14,
+   "type": "row",
+   "title": "Base de données (Npgsql)",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 33,
+    "w": 24,
+    "h": 1
+   },
+   "panels": []
+  },
+  {
+   "id": 15,
+   "type": "timeseries",
+   "title": "Requêtes SQL : p95 et débit",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 34,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "histogram_quantile(0.95, sum by (le, instance) (rate(db_client_operation_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])))",
+     "legendFormat": "p95 {{instance}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 16,
+   "type": "timeseries",
+   "title": "Pool de connexions PostgreSQL (utilisées / max)",
+   "description": "Si « utilisées » touche « max », les requêtes attendent une connexion libre (goulot). PostgreSQL accepte max_connections au total pour toutes les instances.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 34,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "sum by (instance) (db_client_connection_count{job=~\"$job\", instance=~\"$instance\", db_client_connection_state=\"used\"})",
+     "legendFormat": "utilisées {{instance}}"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "B",
+     "expr": "sum by (instance) (db_client_connection_count{job=~\"$job\", instance=~\"$instance\", db_client_connection_state=\"idle\"})",
+     "legendFormat": "inactives {{instance}}"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "C",
+     "expr": "max by (instance) (db_client_connection_max{job=~\"$job\", instance=~\"$instance\"})",
+     "legendFormat": "max {{instance}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 17,
+   "type": "row",
+   "title": "Ressources des instances",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 42,
+    "w": 24,
+    "h": 1
+   },
+   "panels": []
+  },
+  {
+   "id": 18,
+   "type": "timeseries",
+   "title": "CPU (cœurs utilisés)",
+   "description": "1 = un cœur entier occupé par le processus .NET.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 43,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "sum by (instance) (rate(dotnet_process_cpu_time_seconds_total{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+     "legendFormat": "{{instance}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 19,
+   "type": "timeseries",
+   "title": "Mémoire (working set)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 43,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "sum by (instance) (dotnet_process_memory_working_set_bytes{job=~\"$job\", instance=~\"$instance\"})",
+     "legendFormat": "{{instance}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 20,
+   "type": "timeseries",
+   "title": "File d'attente du pool de threads",
+   "description": "Une file qui grandit = l'instance n'arrive plus à suivre (CPU saturé ou attente bloquante).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 43,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "sum by (instance) (dotnet_thread_pool_queue_length_total{job=~\"$job\", instance=~\"$instance\"})",
+     "legendFormat": "file {{instance}}"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "B",
+     "expr": "sum by (instance) (dotnet_thread_pool_thread_count_total{job=~\"$job\", instance=~\"$instance\"})",
+     "legendFormat": "threads {{instance}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 21,
+   "type": "timeseries",
+   "title": "Ramasse-miettes (pause / s)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 51,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "sum by (instance) (rate(dotnet_gc_pause_time_seconds_total{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+     "legendFormat": "{{instance}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 22,
+   "type": "timeseries",
+   "title": "Connexions HTTP (Kestrel)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 51,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "sum by (instance) (kestrel_active_connections{job=~\"$job\", instance=~\"$instance\"})",
+     "legendFormat": "actives {{instance}}"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "B",
+     "expr": "sum by (instance) (kestrel_queued_connections{job=~\"$job\", instance=~\"$instance\"})",
+     "legendFormat": "en attente {{instance}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 23,
+   "type": "timeseries",
+   "title": "Boîte d'envoi et temps réel",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus-immoplus"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 51,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "A",
+     "expr": "max(immoplus_boite_envoi_en_attente{job=~\"$job\", instance=~\"$instance\"})",
+     "legendFormat": "en attente"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "B",
+     "expr": "max(immoplus_boite_envoi_abandonnes{job=~\"$job\", instance=~\"$instance\"})",
+     "legendFormat": "abandonnés"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus-immoplus"
+     },
+     "refId": "C",
+     "expr": "sum(signalr_server_active_connections{job=~\"$job\", instance=~\"$instance\"})",
+     "legendFormat": "connexions SignalR"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  }
+ ]
+}

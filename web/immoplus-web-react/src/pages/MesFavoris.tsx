@@ -1,8 +1,9 @@
 import { Link } from "react-router-dom";
 import { Heart } from "lucide-react";
 import { useAuth } from "../context/auth";
-import { classeBoutonPrincipal, useChargement } from "../components/admin/outils";
-import { MessageErreur } from "../components/admin/ui";
+import { classeBoutonPrincipal } from "../components/admin/outils";
+import { useListeProgressive } from "../components/admin/pagination";
+import { MessageErreur, VoirPlus } from "../components/admin/ui";
 import CarteAnnonce from "../components/appartements/CarteAnnonce";
 import type { AppartementDto } from "../types/models";
 
@@ -12,7 +13,8 @@ const segment = (a: AppartementDto) => (a.typeOffre === "LongueDuree" ? "longue-
 export default function MesFavoris() {
   const { estConnecte, roleUtilisateur } = useAuth();
   const autorise = estConnecte && roleUtilisateur !== "Admin";
-  const { donnees, chargement, erreur } = useChargement<AppartementDto[]>(autorise ? "favoris" : null);
+  const liste = useListeProgressive<AppartementDto>(autorise ? "favoris" : null, 24);
+  const { chargement, erreur, total } = liste;
 
   if (!autorise) {
     return (
@@ -25,7 +27,7 @@ export default function MesFavoris() {
     );
   }
 
-  const favoris = donnees ?? [];
+  const favoris = liste.elements;
 
   return (
     <div className="px-6 py-10">
@@ -34,7 +36,7 @@ export default function MesFavoris() {
         <p className="text-gray-500 text-sm mb-8">
           {chargement
             ? "Chargement..."
-            : `${favoris.length} annonce${favoris.length > 1 ? "s" : ""} enregistrée${favoris.length > 1 ? "s" : ""}. Touchez le cœur pour en retirer une.`}
+            : `${total} annonce${total > 1 ? "s" : ""} enregistrée${total > 1 ? "s" : ""}. Touchez le cœur pour en retirer une.`}
         </p>
 
         {chargement ? null : erreur ? (
@@ -55,11 +57,26 @@ export default function MesFavoris() {
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {favoris.map((a) => (
-              <CarteAnnonce key={a.id} appartement={a} lien={`/annonces/${segment(a)}/${a.id}`} afficherIndisponible />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {favoris.map((a) => (
+                <CarteAnnonce
+                  key={a.id}
+                  appartement={a}
+                  lien={`/annonces/${segment(a)}/${a.id}`}
+                  afficherIndisponible
+                />
+              ))}
+            </div>
+            <VoirPlus
+              aPlus={liste.aPlus}
+              chargement={liste.chargementPlus}
+              onClick={liste.chargerPlus}
+              affiches={favoris.length}
+              total={total}
+              libelle="Voir plus de favoris"
+            />
+          </>
         )}
       </div>
     </div>

@@ -2,7 +2,8 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { Check, ExternalLink, FileText, IdCard, X } from "lucide-react";
 import { apiClient, chargerFichierProtegeAvecType } from "../../api/client";
-import { Badge, EnTete, EtatListe, MessageErreur, Onglets } from "../../components/admin/ui";
+import { Badge, EnTete, EtatListe, MessageErreur, Onglets, Pagination } from "../../components/admin/ui";
+import { useListeAOnglets } from "../../components/admin/pagination";
 import {
   classeBoutonDanger,
   classeBoutonPrincipal,
@@ -10,12 +11,11 @@ import {
   classeChamp,
   formaterDateHeure,
   messageErreur,
-  useChargement,
 } from "../../components/admin/outils";
 import { lienAdminCible } from "../../components/admin/liens";
 import { signalerCompteursAdmin } from "../../components/admin/compteurs";
 import { infoStatutPiece, libelleTypePiece, statutPiece } from "../../components/identite/identite";
-import type { PagedResultDto, PieceIdentiteDto, StatutPieceIdentite } from "../../types/models";
+import type { PieceIdentiteDto, StatutPieceIdentite } from "../../types/models";
 
 type Filtre = StatutPieceIdentite | "Toutes";
 
@@ -142,13 +142,26 @@ function Decision({ piece, onDecide }: { piece: PieceIdentiteDto; onDecide: () =
   );
 }
 
+const ONGLETS = ["EnAttente", "Validee", "Refusee", "Toutes"] as const;
+const requeteOnglet = (f: Filtre) => (f === "Toutes" ? "" : `statut=${f}`);
+const LOCAL = {
+  dansOnglet: (f: Filtre, p: PieceIdentiteDto) => f === "Toutes" || statutPiece(p.statut) === f,
+};
+
 /** Demandes de vérification d'identité : aperçu des pièces (privées) et décision. */
 export default function Identites() {
   const [filtre, setFiltre] = useState<Filtre>("EnAttente");
-  const { donnees, chargement, erreur, recharger } = useChargement<
-    PagedResultDto<PieceIdentiteDto> | PieceIdentiteDto[]
-  >(`admin/identites${filtre === "Toutes" ? "" : `?statut=${filtre}`}`);
-  const pieces = Array.isArray(donnees) ? donnees : (donnees?.donnees ?? []);
+  const liste = useListeAOnglets<PieceIdentiteDto, Filtre>({
+    base: "admin/identites",
+    onglet: filtre,
+    onglets: ONGLETS,
+    requeteOnglet,
+    mode: "pages",
+    local: LOCAL,
+  });
+  const { chargement, erreur, recharger, compteurs } = liste;
+  const pieces = liste.elements;
+  const nombre = (f: Filtre) => (compteurs[f] !== undefined ? ` (${compteurs[f]})` : "");
   const [ouverte, setOuverte] = useState<number | null>(null);
 
   return (
@@ -165,10 +178,10 @@ export default function Identites() {
           setOuverte(null);
         }}
         options={[
-          { valeur: "EnAttente", label: "En attente" },
-          { valeur: "Validee", label: "Validées" },
-          { valeur: "Refusee", label: "Refusées" },
-          { valeur: "Toutes", label: "Toutes" },
+          { valeur: "EnAttente", label: `En attente${nombre("EnAttente")}` },
+          { valeur: "Validee", label: `Validées${nombre("Validee")}` },
+          { valeur: "Refusee", label: `Refusées${nombre("Refusee")}` },
+          { valeur: "Toutes", label: `Toutes${nombre("Toutes")}` },
         ]}
       />
 
@@ -248,6 +261,7 @@ export default function Identites() {
             );
           })}
         </ul>
+        <Pagination page={liste.page} totalPages={liste.totalPages} onChange={liste.setPage} total={liste.total} />
       </EtatListe>
     </>
   );

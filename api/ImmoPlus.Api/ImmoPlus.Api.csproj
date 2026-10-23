@@ -7,25 +7,40 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Stockage objet compatible S3 (MinIO en local, tout fournisseur S3 en production) : licence Apache-2.0. -->
+    <PackageReference Include="AWSSDK.S3" Version="4.0.104.4" />
     <PackageReference Include="BCrypt.Net-Next" Version="4.2.0" />
     <!-- Exports Excel (admin) : licence MIT (dépendances MIT, SixLabors.Fonts 1.0 sous Apache-2.0). -->
     <PackageReference Include="ClosedXML" Version="0.105.1" />
+    <!-- Dépendance transitive du backplane SignalR Redis (2.5.302 signalée vulnérable, GHSA-qhrr-8q5h-9q3h) : version corrigée imposée. -->
+    <PackageReference Include="MessagePack" Version="2.5.303" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
+    <!-- Cache de sortie des listes publiques partagé entre les instances (Redis), licence MIT. -->
+    <PackageReference Include="Microsoft.AspNetCore.OutputCaching.StackExchangeRedis" Version="10.0.12" />
+    <!-- Plusieurs instances : backplane SignalR Redis (MIT). StackExchange.Redis (MIT) épinglé sur la dernière 2.x, compatible avec ce paquet. -->
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.StackExchangeRedis" Version="10.0.12" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
+    <!-- PostgreSQL (base de production et de développement) ; SQLite n'est plus utilisé que par l'outil ImmoPlus.MigrationDonnees. -->
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <!-- Npgsql 10.0.3 tire EF Core 10.0.4 : aligné ici sur la version d'EF Core du projet (10.0.12), pour l'API comme pour les tests. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.12" />
+    <!-- Métriques OpenTelemetry (Apache-2.0) exposées au format Prometheus sur /metriques ; l'exportateur Prometheus n'existe qu'en version bêta. -->
+    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.20.0-beta.1" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.20.0" />
     <!-- PDF (quittances, reçus, contrat, état des lieux) : licence Community, gratuite sous 1 M USD de chiffre d'affaires annuel. -->
     <PackageReference Include="QuestPDF" Version="2026.9.1" />
     <!-- Photos (réorientation, retrait EXIF, redimensionnement, miniatures) : licence MIT. Binaires natifs Linux sans dépendance système (Docker). -->
     <PackageReference Include="SkiaSharp" Version="4.153.1" />
     <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.153.1" />
+    <PackageReference Include="StackExchange.Redis" Version="2.13.17" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.3" />
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Sauvegardes de la base produites par l'API : ni surveillées par dotnet watch, ni publiées. -->
+    <!-- Sauvegardes de la base (pg_dump du service sauvegarde-db, anciennes copies SQLite) : ni surveillées par dotnet watch, ni publiées. -->
     <None Remove="Sauvegardes/**" />
     <Watch Remove="Sauvegardes/**" />
   </ItemGroup>

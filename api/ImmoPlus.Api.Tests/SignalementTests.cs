@@ -27,7 +27,7 @@ public class SignalementTests
         var cree = await anonyme.PostJson("/signalements", Signaler("Appartement", logement.Id, email: "visiteur@exemple.test"))
             .Attendre<SignalementDto>(HttpStatusCode.Created);
         Assert.Equal("Nouveau", cree.Statut);
-        Assert.Contains(f.Smtp.EmailsPour(admin.Email), e => e.Sujet.Contains($"[Signalement n° {cree.Id:D6}]"));
+        Assert.Contains(await f.EmailsPourAsync(admin.Email), e => e.Sujet.Contains($"[Signalement n° {cree.Id:D6}]"));
 
         // Même auteur, même cible, signalement encore ouvert : 409 (email comparé sans la casse).
         await anonyme.PostJson("/signalements", Signaler("Appartement", logement.Id, email: "VISITEUR@exemple.test")).Erreur(HttpStatusCode.Conflict);

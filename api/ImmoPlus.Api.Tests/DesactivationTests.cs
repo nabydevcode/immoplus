@@ -29,7 +29,7 @@ public class DesactivationTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFacto
         Assert.Equal(2, resultat.ReservationsAnnulees);
         Assert.Equal(1, resultat.ReservationsConfirmeesAVenir);
 
-        var reservations = await voyageur.Client.GetAsync("/reservation/lister").Attendre<List<ReservationResponseDto>>();
+        var reservations = await voyageur.Client.GetAsync("/reservation/lister").AttendreDonnees<ReservationResponseDto>();
         foreach (var (id, payé) in new[] { (demande.Id, 0m), (acompte.Id, 100_000m) })
         {
             var r = reservations.Single(x => x.Id == id);
@@ -39,11 +39,11 @@ public class DesactivationTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFacto
             Assert.Equal(payé, r.MontantARembourser);
         }
         Assert.Equal("Confirmee", reservations.Single(x => x.Id == confirmee.Id).Statut);
-        Assert.Contains(f.Smtp.EmailsPour(voyageur.Email), e => e.Sujet.Contains($"{acompte.Id:D6}"));
+        Assert.Contains(await f.EmailsPourAsync(voyageur.Email), e => e.Sujet.Contains($"{acompte.Id:D6}"));
 
         // Le bailleur est déconnecté, ses annonces disparaissent pour le public et ne se réservent plus.
         await bailleur.Client.GetAsync("/utilisateur/moi").Verifier(HttpStatusCode.Unauthorized);
-        var publiques = await f.CreateClient().GetAsync("/appartement/lister").Attendre<List<AppartementResponseDto>>();
+        var publiques = await f.CreateClient().GetAsync("/appartement/lister").AttendreDonnees<AppartementResponseDto>();
         Assert.DoesNotContain(publiques, a => a.BailleurId == bailleur.Id);
         await f.CreateClient().GetAsync($"/appartement/{instantane.Id}").Verifier(HttpStatusCode.NotFound);
         await admin.Client.GetAsync($"/appartement/{instantane.Id}").Verifier(HttpStatusCode.OK);
@@ -71,13 +71,13 @@ public class DesactivationTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFacto
         await bailleur.Client.DeleteAsync($"/appartement/{logement.Id}").Verifier(HttpStatusCode.NoContent);
         await bailleur.Client.DeleteAsync($"/appartement/{logement.Id}").Erreur(HttpStatusCode.Conflict);
 
-        Assert.DoesNotContain(await f.CreateClient().GetAsync("/appartement/lister").Attendre<List<AppartementResponseDto>>(), a => a.Id == logement.Id);
+        Assert.DoesNotContain(await f.CreateClient().GetAsync("/appartement/lister").AttendreDonnees<AppartementResponseDto>(), a => a.Id == logement.Id);
         await f.CreateClient().GetAsync($"/appartement/{logement.Id}").Verifier(HttpStatusCode.NotFound);
         Assert.True((await bailleur.Client.GetAsync($"/appartement/{logement.Id}").Attendre<AppartementResponseDto>()).EstDesactive);
         await voyageur.Reserver(logement.Id, 20, 2).Erreur(HttpStatusCode.Conflict);
 
         await bailleur.Client.PostJson($"/appartement/{logement.Id}/reactiver").Verifier(HttpStatusCode.OK);
-        Assert.Contains(await f.CreateClient().GetAsync("/appartement/lister").Attendre<List<AppartementResponseDto>>(), a => a.Id == logement.Id);
+        Assert.Contains(await f.CreateClient().GetAsync("/appartement/lister").AttendreDonnees<AppartementResponseDto>(), a => a.Id == logement.Id);
         await voyageur.ReserverOk(logement.Id, 20, 2);
     }
 

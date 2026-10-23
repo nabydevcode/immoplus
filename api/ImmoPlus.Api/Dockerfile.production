@@ -1,0 +1,26 @@
+# Image de PRODUCTION de l'API (Release, sans dotnet watch, sans code source ni SDK dans l'image finale).
+# Utilisée par le profil compose « echelle » (2 instances derrière nginx) ; base possible pour un futur déploiement en conteneur.
+#   docker compose --profile echelle build
+# Configuration uniquement par variables d'environnement (secrets jamais dans l'image) :
+#   ConnectionStrings__Default, Jwt__Cle, Stockage__*, Redis__Connexion, Smtp__*, Frontend__Url, Cors__OriginesAutorisees__0…
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+COPY ImmoPlus.Api.csproj ./
+RUN dotnet restore
+COPY . .
+RUN dotnet publish ImmoPlus.Api.csproj -c Release -o /app/publish --no-restore /p:UseAppHost=false
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+WORKDIR /app
+# Dossiers inscriptibles par l'utilisateur non privilégié « app » (fourni par l'image Microsoft) :
+# Storage/ ne sert qu'en Stockage:Mode=Disque (en S3, les fichiers sont dans le bucket) ;
+# Sauvegardes/postgres est monté en lecture seule par compose (liste des pg_dump pour la page admin).
+RUN mkdir -p /app/Storage /app/Sauvegardes/postgres && chown -R app:app /app/Storage /app/Sauvegardes
+COPY --from=build /app/publish .
+USER app
+ENV ASPNETCORE_ENVIRONMENT=Production \
+    ASPNETCORE_HTTP_PORTS=8080 \
+    DOTNET_RUNNING_IN_CONTAINER=true
+EXPOSE 8080
+ENTRYPOINT ["dotnet", "ImmoPlus.Api.dll"]

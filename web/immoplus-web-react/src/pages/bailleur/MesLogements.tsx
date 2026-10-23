@@ -20,7 +20,8 @@ import CalendrierLogement from "../../components/sejour/CalendrierLogement";
 import { BadgeInstantanee, Capacite } from "../../components/sejour/CaracteristiquesLogement";
 import { localisation } from "../../components/sejour/equipements";
 import { classeBoutonPrincipal, formaterMontant, messageErreur, useChargement } from "../../components/admin/outils";
-import { MessageErreur } from "../../components/admin/ui";
+import { MessageErreur, VoirPlus } from "../../components/admin/ui";
+import { avecPage, listeDe, TAILLE_MAX, useListeProgressive } from "../../components/admin/pagination";
 import type { AppartementDto, CandidatureDto, PagedResultDto, ReservationDto } from "../../types/models";
 import { useLienConnexion } from "../../hooks/useLienConnexion";
 
@@ -28,13 +29,18 @@ export default function MesLogements() {
   const { estConnecte, roleUtilisateur, utilisateurId } = useAuth();
   const lienConnexion = useLienConnexion();
   const estBailleur = estConnecte && roleUtilisateur === "Bailleur" && utilisateurId !== null;
-  const appartements = useChargement<AppartementDto[]>(
+  // Logements 12 par 12 (« Voir plus »). Pastilles par logement : dossiers à étudier et demandes de séjour,
+  // lus sur les 100 plus récents de chaque sorte (filtrés par l'API quand elle le permet).
+  const appartements = useListeProgressive<AppartementDto>(
     estBailleur ? `appartement/lister?bailleurId=${utilisateurId}` : null,
+    12,
   );
-  const candidatures = useChargement<PagedResultDto<CandidatureDto>>(
-    estBailleur ? "candidature/lister?page=1&taille=100" : null,
+  const candidatures = useChargement<PagedResultDto<CandidatureDto> | CandidatureDto[]>(
+    estBailleur ? avecPage("candidature/lister?statut=EnAttente", 1, TAILLE_MAX) : null,
   );
-  const reservations = useChargement<ReservationDto[]>(estBailleur ? "reservation/lister" : null);
+  const reservations = useChargement<PagedResultDto<ReservationDto> | ReservationDto[]>(
+    estBailleur ? avecPage("reservation/lister?filtre=Demandes", 1, TAILLE_MAX) : null,
+  );
   const [calendrier, setCalendrier] = useState<AppartementDto | null>(null);
   // null : formulaire fermé ; "ajout" : nouveau logement ; sinon l'annonce en cours de modification.
   const [formulaire, setFormulaire] = useState<null | "ajout" | AppartementDto>(null);
@@ -60,7 +66,7 @@ export default function MesLogements() {
     setSuppressionEnCours(a.id);
     try {
       await apiClient.delete(`appartement/${a.id}`);
-      appartements.setDonnees((liste) => (liste ?? []).map((x) => (x.id === a.id ? { ...x, estDesactive: true } : x)));
+      appartements.setElements((liste) => liste.map((x) => (x.id === a.id ? { ...x, estDesactive: true } : x)));
       setAvertissement(null);
       setConfirmation(`« ${a.adresse} » a été supprimé des annonces. Vous pouvez le réactiver depuis sa carte.`);
     } catch (err) {
@@ -74,7 +80,7 @@ export default function MesLogements() {
     setSuppressionEnCours(a.id);
     try {
       const misAJour = await apiClient.post<AppartementDto>(`appartement/${a.id}/reactiver`);
-      appartements.setDonnees((liste) => (liste ?? []).map((x) => (x.id === a.id ? misAJour : x)));
+      appartements.setElements((liste) => liste.map((x) => (x.id === a.id ? misAJour : x)));
       setAvertissement(null);
       setConfirmation(`« ${a.adresse} » est de nouveau publié.`);
     } catch (err) {
@@ -104,14 +110,14 @@ export default function MesLogements() {
   }
 
   // L'API liste toutes les annonces publiques : on ne garde que celles du bailleur connecté.
-  const mesLogements = (appartements.donnees ?? [])
+  const mesLogements = appartements.elements
     .filter((a) => a.bailleurId === utilisateurId)
     .sort((x, y) => Number(!!x.estDesactive) - Number(!!y.estDesactive));
   const aEtudier = (appartementId: number) =>
-    candidatures.donnees?.donnees.filter((c) => c.appartementId === appartementId && c.statut === "EnAttente").length ??
-    0;
+    listeDe(candidatures.donnees).filter((c) => c.appartementId === appartementId && c.statut === "EnAttente").length;
   const demandesEnAttente = (appartementId: number) =>
-    reservations.donnees?.filter((r) => r.appartementId === appartementId && r.statut === "DemandeEnvoyee").length ?? 0;
+    listeDe(reservations.donnees).filter((r) => r.appartementId === appartementId && r.statut === "DemandeEnvoyee")
+      .length;
 
   return (
     <div className="px-6 py-10">
@@ -137,8 +143,8 @@ export default function MesLogements() {
             onAnnuler={() => setFormulaire(null)}
             onEnregistre={(a, avertissement) => {
               setAvertissement(avertissement ?? null);
-              appartements.setDonnees((liste) =>
-                formulaire === "ajout" ? [...(liste ?? []), a] : (liste ?? []).map((x) => (x.id === a.id ? a : x)),
+              appartements.setElements((liste) =>
+                formulaire === "ajout" ? [a, ...liste] : liste.map((x) => (x.id === a.id ? a : x)),
               );
               setConfirmation(
                 formulaire === "ajout"
@@ -349,6 +355,14 @@ export default function MesLogements() {
             })}
           </div>
         )}
+        <VoirPlus
+          aPlus={appartements.aPlus}
+          chargement={appartements.chargementPlus}
+          onClick={appartements.chargerPlus}
+          affiches={mesLogements.length}
+          total={appartements.total}
+          libelle="Voir plus de logements"
+        />
       </div>
     </div>
   );

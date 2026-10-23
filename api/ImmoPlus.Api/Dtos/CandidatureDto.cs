@@ -3,6 +3,7 @@ namespace ImmoPlus.Api.Dtos;
 public class CandidatureDto
 {
     public int AppartementId { get; set; }
+    /// <summary>Ignoré : l'apport est fixé par la plateforme (2 mois de loyer, ou l'avance entière si plus courte).</summary>
     public decimal ApportInitial { get; set; }
     public string SituationProfessionnelle { get; set; } = string.Empty;
     public GarantDto? Garant { get; set; }

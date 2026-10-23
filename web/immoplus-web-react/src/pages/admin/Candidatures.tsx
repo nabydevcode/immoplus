@@ -5,7 +5,15 @@ import ExamenCandidature from "../../components/candidatures/ExamenCandidature";
 import { BarreRecherche } from "../../components/candidatures/RechercheCandidature";
 import { useRechercheCandidature } from "../../components/candidatures/recherche";
 import { referenceDossier } from "../../components/candidatures/analyse";
-import { Badge, EnTete, EtatListe, Onglets, Tableau } from "../../components/admin/ui";
+import { Badge, EnTete, EtatListe, Onglets, Pagination, Tableau } from "../../components/admin/ui";
+import {
+  avecPage,
+  listeDe,
+  TAILLE_MAX,
+  texteRecherche,
+  useListeAOnglets,
+  useValeurDifferee,
+} from "../../components/admin/pagination";
 import { formaterDate, formaterMontant, useChargement } from "../../components/admin/outils";
 import type { AppartementDto, CandidatureDto, PagedResultDto } from "../../types/models";
 
@@ -18,20 +26,63 @@ const statuts = {
   Annulee: { label: "Annulée", ton: "neutre" },
 } as const;
 
-export default function Candidatures() {
-  const { donnees, chargement, erreur, recharger } = useChargement<PagedResultDto<CandidatureDto>>(
-    "candidature/lister?page=1&taille=100",
+type Filtre = "EnAttente" | "Toutes";
+const ONGLETS = ["EnAttente", "Toutes"] as const;
+/** Onglet → paramètre de l'API (candidature/lister?statut=…). */
+const requeteOnglet = (f: Filtre) => (f === "EnAttente" ? "statut=EnAttente" : "");
+const LOCAL = {
+  dansOnglet: (f: Filtre, c: CandidatureDto) => f === "Toutes" || c.statut === "EnAttente",
+};
+
+/**
+ * Dossier déplié : le logement (loyer, avance, location en cours) et le nombre de candidats retenus pour une visite
+ * sont lus pour ce seul logement, quelle que soit la page affichée.
+ */
+function DetailCandidature({ candidature, onMiseAJour }: { candidature: CandidatureDto; onMiseAJour: () => void }) {
+  const appartement = useChargement<AppartementDto>(`appartement/${candidature.appartementId}`);
+  const visites = useChargement<PagedResultDto<CandidatureDto> | CandidatureDto[]>(
+    avecPage(`candidature/lister?appartementId=${candidature.appartementId}&statut=Preselectionnee`, 1, TAILLE_MAX),
   );
-  const { donnees: appartements, recharger: rechargerAppartements } =
-    useChargement<AppartementDto[]>("appartement/lister");
-  const [filtre, setFiltre] = useState<"EnAttente" | "Toutes">("EnAttente");
+  const mettreAJour = () => {
+    appartement.recharger();
+    visites.recharger();
+    onMiseAJour();
+  };
+  return (
+    <ExamenCandidature
+      nbPreselectionnes={
+        listeDe(visites.donnees).filter(
+          (x) => x.appartementId === candidature.appartementId && x.statut === "Preselectionnee",
+        ).length
+      }
+      candidature={candidature}
+      appartement={appartement.donnees ?? undefined}
+      onMiseAJour={mettreAJour}
+    />
+  );
+}
+
+export default function Candidatures() {
+  const [filtre, setFiltre] = useState<Filtre>("EnAttente");
   const [params] = useSearchParams();
   const q = params.get("q") ?? "";
   const [ouverteChoisie, setOuverte] = useState<number | null | undefined>(undefined);
-
-  const candidatures = donnees?.donnees ?? [];
-  const enAttente = candidatures.filter((c) => c.statut === "EnAttente");
-  const recherche = useRechercheCandidature(candidatures, q);
+  const [saisie, setSaisie] = useState(q);
+  // Recherche côté serveur (q) après une pause de saisie ; un n° absent de la page est aussi cherché directement.
+  const rechercheEnvoyee = useValeurDifferee(texteRecherche(saisie));
+  const liste = useListeAOnglets<CandidatureDto, Filtre>({
+    base: "candidature/lister",
+    onglet: filtre,
+    onglets: ONGLETS,
+    requeteOnglet,
+    recherche: rechercheEnvoyee,
+    mode: "pages",
+    local: LOCAL,
+  });
+  const { chargement, erreur, recharger, compteurs } = liste;
+  const recherche = useRechercheCandidature(liste.elements, q);
+  if (recherche.texte !== saisie) setSaisie(recherche.texte);
+  const nombre = (f: Filtre) => (compteurs[f] !== undefined ? ` (${compteurs[f]})` : "");
   // Lien direct (?q=référence, depuis le tableau de bord) : la page s'ouvre filtrée sur la référence,
   // et l'élément s'ouvre tout seul s'il est le seul résultat, tant que l'utilisateur n'a rien ouvert lui-même.
   const ouverte =
@@ -41,13 +92,10 @@ export default function Candidatures() {
         ? recherche.resultats[0].id
         : null;
   // Une recherche (par n° de dossier, nom ou adresse) porte sur tous les statuts.
-  const affichees = recherche.resultats ?? (filtre === "EnAttente" ? enAttente : candidatures);
+  const affichees = recherche.resultats ?? liste.elements;
 
   // Une décision change aussi les autres dossiers du logement (liste d'attente) et l'état du logement : on recharge.
-  const mettreAJour = () => {
-    recharger();
-    rechargerAppartements();
-  };
+  const mettreAJour = recharger;
 
   return (
     <>
@@ -58,8 +106,8 @@ export default function Candidatures() {
           valeur={filtre}
           onChange={setFiltre}
           options={[
-            { valeur: "EnAttente", label: `En attente (${enAttente.length})` },
-            { valeur: "Toutes", label: `Toutes (${candidatures.length})` },
+            { valeur: "EnAttente", label: `En attente${nombre("EnAttente")}` },
+            { valeur: "Toutes", label: `Toutes${nombre("Toutes")}` },
           ]}
         />
       )}
@@ -98,22 +146,14 @@ export default function Candidatures() {
               {ouverte === c.id && (
                 <tr className="border-b border-black/5 bg-immo-cream/40">
                   <td colSpan={8} className="px-5 py-5">
-                    <ExamenCandidature
-                      nbPreselectionnes={
-                        candidatures.filter(
-                          (x) => x.appartementId === c.appartementId && x.statut === "Preselectionnee",
-                        ).length
-                      }
-                      candidature={c}
-                      appartement={appartements?.find((a) => a.id === c.appartementId)}
-                      onMiseAJour={mettreAJour}
-                    />
+                    <DetailCandidature candidature={c} onMiseAJour={mettreAJour} />
                   </td>
                 </tr>
               )}
             </Fragment>
           ))}
         </Tableau>
+        <Pagination page={liste.page} totalPages={liste.totalPages} onChange={liste.setPage} total={liste.total} />
       </EtatListe>
     </>
   );

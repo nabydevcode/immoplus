@@ -2,7 +2,8 @@ import { useState, type FormEvent } from "react";
 import { MessageSquareReply, Star, UserRound } from "lucide-react";
 import { apiClient } from "../../api/client";
 import type { AvisDto, ListeAvisDto } from "../../types/models";
-import { MessageErreur } from "../admin/ui";
+import { MessageErreur, VoirPlus } from "../admin/ui";
+import { useListeProgressive } from "../admin/pagination";
 import {
   classeBoutonPrincipal,
   classeBoutonSecondaire,
@@ -12,7 +13,15 @@ import {
 } from "../admin/outils";
 import { NoteEtoiles } from "./Etoiles";
 import Signaler from "../signalement/Signaler";
-import { CRITERES_AVIS, formaterNote, moisAnnee, REPONSE_MAX } from "./notes";
+import {
+  avisDeLaReponse,
+  CRITERES_AVIS,
+  formaterNote,
+  listeAvis,
+  moisAnnee,
+  REPONSE_MAX,
+  type ReponseAvis,
+} from "./notes";
 
 /** « ★ 4,8 · 12 avis » ou « Nouveau » quand le logement n'a pas encore d'avis. */
 export function ResumeNote({
@@ -148,7 +157,7 @@ export function CarteAvis({
 }
 
 /** Moyennes par critère, en barres. */
-function MoyennesCriteres({ liste }: { liste: ListeAvisDto }) {
+function MoyennesCriteres({ liste }: { liste: Pick<ListeAvisDto, "moyennes"> }) {
   const criteres = CRITERES_AVIS.map((c) => ({ ...c, valeur: liste.moyennes?.[c.cle] ?? null })).filter(
     (c) => c.valeur != null,
   );
@@ -170,7 +179,7 @@ function MoyennesCriteres({ liste }: { liste: ListeAvisDto }) {
   );
 }
 
-const AVIS_VISIBLES = 6;
+const AVIS_PAR_PAGE = 6;
 
 /** Section « Avis » de la fiche d'une annonce ; le propriétaire peut répondre aux avis. */
 export function SectionAvis({
@@ -182,8 +191,15 @@ export function SectionAvis({
   estProprietaire: boolean;
   longueDuree?: boolean;
 }) {
-  const { donnees, chargement, erreur, recharger } = useChargement<ListeAvisDto>(`appartement/${appartementId}/avis`);
-  const [tousVisibles, setTousVisibles] = useState(false);
+  // Moyennes et nombre d'avis : globaux (toutes pages) ; les avis eux-mêmes arrivent 6 par 6.
+  const liste = useListeProgressive<AvisDto, ReponseAvis>(
+    `appartement/${appartementId}/avis`,
+    AVIS_PAR_PAGE,
+    avisDeLaReponse,
+  );
+  const donnees = liste.brut;
+  const { chargement, erreur, recharger } = liste;
+  const avis = liste.elements;
 
   return (
     <section id="avis" className="scroll-mt-24">
@@ -199,9 +215,9 @@ export function SectionAvis({
       </h2>
       {chargement ? (
         <p className="text-sm text-gray-500">Chargement des avis...</p>
-      ) : erreur || !donnees ? (
-        <MessageErreur>{erreur ?? "Impossible de charger les avis."}</MessageErreur>
-      ) : donnees.avis.length === 0 ? (
+      ) : erreur && avis.length === 0 ? (
+        <MessageErreur>{erreur}</MessageErreur>
+      ) : !donnees || avis.length === 0 ? (
         <p className="text-sm text-gray-500">
           {longueDuree
             ? "Aucun avis pour le moment. Les locataires peuvent laisser un avis après leur location (ou après 6 mois sur place)."
@@ -216,7 +232,7 @@ export function SectionAvis({
           </p>
           <MoyennesCriteres liste={donnees} />
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-            {(tousVisibles ? donnees.avis : donnees.avis.slice(0, AVIS_VISIBLES)).map((a) => (
+            {avis.map((a) => (
               <CarteAvis
                 key={a.id}
                 avis={a}
@@ -226,15 +242,15 @@ export function SectionAvis({
               />
             ))}
           </div>
-          {donnees.avis.length > AVIS_VISIBLES && (
-            <button
-              type="button"
-              onClick={() => setTousVisibles((v) => !v)}
-              className={`${classeBoutonSecondaire()} mt-5`}
-            >
-              {tousVisibles ? "Afficher moins d'avis" : `Afficher les ${donnees.avis.length} avis`}
-            </button>
-          )}
+          <VoirPlus
+            aPlus={liste.aPlus}
+            chargement={liste.chargementPlus}
+            onClick={liste.chargerPlus}
+            affiches={avis.length}
+            total={liste.total}
+            libelle="Voir plus d'avis"
+          />
+          {erreur && <p className="text-sm text-red-600 mt-3">{erreur}</p>}
         </>
       )}
     </section>
@@ -251,8 +267,11 @@ export function AvisDeLaReservation({
   reservationId: number;
   peutRepondre?: boolean;
 }) {
-  const { donnees, chargement, erreur, recharger } = useChargement<ListeAvisDto>(`appartement/${appartementId}/avis`);
-  const avis = donnees?.avis.find((a) => a.reservationId === reservationId);
+  // reservationId : filtre demandé à l'API ; sans lui, l'avis est cherché dans les 100 plus récents.
+  const { donnees, chargement, erreur, recharger } = useChargement<ReponseAvis>(
+    `appartement/${appartementId}/avis?reservationId=${reservationId}&page=1&taille=100`,
+  );
+  const avis = listeAvis(donnees).find((a) => a.reservationId === reservationId);
   if (chargement) return <p className="text-sm text-gray-500">Chargement de l'avis...</p>;
   if (erreur) return <MessageErreur>{erreur}</MessageErreur>;
   if (!avis) return <p className="text-sm text-gray-500">Avis introuvable.</p>;
@@ -265,7 +284,7 @@ export function AvisDeLaReservation({
 
 /** Ce que les autres hôtes disent d'un voyageur (avis HoteVersVoyageur), pour l'hôte qui reçoit une demande. */
 export function ReputationVoyageur({ voyageurId }: { voyageurId: number }) {
-  const { donnees, erreur } = useChargement<ListeAvisDto>(`utilisateur/${voyageurId}/avis`);
+  const { donnees, erreur } = useChargement<ReponseAvis>(`utilisateur/${voyageurId}/avis`);
   const [ouvert, setOuvert] = useState(false);
   if (erreur || !donnees) return null;
   if (donnees.nombre === 0 || donnees.moyenne == null) {
@@ -285,7 +304,7 @@ export function ReputationVoyageur({ voyageurId }: { voyageurId: number }) {
       </button>
       {ouvert && (
         <div className="flex flex-col gap-4 bg-immo-cream/60 rounded-xl p-4">
-          {donnees.avis.map((a) => (
+          {listeAvis(donnees).map((a) => (
             <CarteAvis key={a.id} avis={a} />
           ))}
         </div>

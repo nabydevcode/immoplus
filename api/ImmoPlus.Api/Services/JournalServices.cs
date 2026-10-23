@@ -2,7 +2,6 @@ namespace ImmoPlus.Api.Services;
 
 using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 using ImmoPlus.Api.Data;
 using ImmoPlus.Api.Dtos;
 using ImmoPlus.Api.Models;
@@ -10,7 +9,7 @@ using ImmoPlus.Api.Models;
 /// <summary>
 /// Journal des actions importantes (audit). L'auteur et son adresse IP viennent de la requête en cours.
 /// Écrit par un contexte à part sur la même connexion (comme les SMS) : n'enregistre jamais par mégarde des modifications
-/// en attente du service appelant, sans ouvrir une seconde connexion SQLite. Un échec d'écriture est journalisé sans jamais
+/// en attente du service appelant, sans ouvrir une seconde connexion (ni sortir de sa transaction). Un échec d'écriture est journalisé sans jamais
 /// faire échouer l'action métier.
 /// </summary>
 public class JournalServices
@@ -48,12 +47,7 @@ public class JournalServices
     {
         try
         {
-            var options = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(_context.Database.GetDbConnection()).Options;
-            await using var contexte = new AppDbContext(options);
-            if (_context.Database.CurrentTransaction is { } transaction)
-            {
-                await contexte.Database.UseTransactionAsync(transaction.GetDbTransaction());
-            }
+            await using var contexte = await AppDbContext.AnnexeAsync(_context);
             contexte.JournalActions.Add(new JournalAction
             {
                 Date = DateTime.UtcNow,
@@ -118,9 +112,11 @@ public class JournalServices
         }
         if (!string.IsNullOrWhiteSpace(recherche))
         {
-            var texte = recherche.Trim().ToLower();
-            requete = requete.Where(j => j.Details.ToLower().Contains(texte) || j.UtilisateurNom.ToLower().Contains(texte)
-                || j.Action.ToLower().Contains(texte));
+            // Sans casse ni accents.
+            var motif = RechercheTexte.Contient(recherche);
+            requete = requete.Where(j => EF.Functions.ILike(EF.Functions.Unaccent(j.Details), EF.Functions.Unaccent(motif))
+                || EF.Functions.ILike(EF.Functions.Unaccent(j.UtilisateurNom), EF.Functions.Unaccent(motif))
+                || EF.Functions.ILike(j.Action, motif));
         }
 
         var total = await requete.CountAsync();

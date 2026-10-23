@@ -9,7 +9,7 @@ using ImmoPlus.Api.Models.Enums;
 
 /// <summary>
 /// Vérification d'identité : le bailleur ou le locataire envoie sa pièce (recto obligatoire, verso facultatif), un admin la contrôle.
-/// Les fichiers restent privés (Storage/identites/{userId}/), servis uniquement aux admins. Images réencodées sans EXIF.
+/// Les fichiers restent privés (clés « identites/{userId}/… »), servis uniquement aux admins. Images réencodées sans EXIF.
 /// </summary>
 public class IdentiteServices
 {
@@ -18,19 +18,23 @@ public class IdentiteServices
     private static readonly string[] ExtensionsImage = [".jpg", ".jpeg", ".png", ".webp"];
 
     private readonly AppDbContext _context;
-    private readonly IWebHostEnvironment _environnement;
+    private readonly IStockageFichiers _stockage;
     private readonly NotificationServices _notificationServices;
     private readonly JournalServices _journal;
+    private readonly ILogger<IdentiteServices> _logger;
 
-    public IdentiteServices(AppDbContext context, IWebHostEnvironment environnement, NotificationServices notificationServices, JournalServices journal)
+    private readonly ICacheHotes _cacheHotes;
+
+    public IdentiteServices(AppDbContext context, IStockageFichiers stockage, NotificationServices notificationServices, JournalServices journal,
+        ILogger<IdentiteServices> logger, ICacheHotes cacheHotes)
     {
+        _cacheHotes = cacheHotes;
         _context = context;
-        _environnement = environnement;
+        _stockage = stockage;
         _notificationServices = notificationServices;
         _journal = journal;
+        _logger = logger;
     }
-
-    public string DossierRacine => Path.Combine(_environnement.ContentRootPath, "Storage", "identites");
 
     public async Task<PieceIdentiteDto> EnvoyerAsync(int utilisateurId, string? type, IFormFile? recto, IFormFile? verso)
     {
@@ -62,9 +66,8 @@ public class IdentiteServices
             await VerifierFichierAsync(verso, "Le verso");
         }
 
-        var dossier = Path.Combine(DossierRacine, utilisateurId.ToString());
-        var cheminRecto = await EnregistrerAsync(recto, dossier, utilisateurId);
-        var cheminVerso = verso is { Length: > 0 } ? await EnregistrerAsync(verso, dossier, utilisateurId) : null;
+        var cheminRecto = await EnregistrerAsync(recto, utilisateurId);
+        var cheminVerso = verso is { Length: > 0 } ? await EnregistrerAsync(verso, utilisateurId) : null;
 
         var piece = new PieceIdentite
         {
@@ -83,7 +86,7 @@ public class IdentiteServices
         catch (DbUpdateException)
         {
             // Index unique filtré (une seule demande en attente) : deux envois simultanés.
-            SupprimerFichiers(cheminRecto, cheminVerso);
+            await SupprimerFichiersAsync(cheminRecto, cheminVerso);
             throw new ConflictException("Une demande de vérification est déjà en attente : attendez la décision de l'administrateur");
         }
         await _journal.EnregistrerAsync("identite.envoyer", "Utilisateur", utilisateurId,
@@ -107,10 +110,10 @@ public class IdentiteServices
         };
     }
 
-    /// <summary>Admin : demandes (en attente d'abord, puis les plus récentes), 200 au plus.</summary>
-    public async Task<List<PieceIdentiteDto>> ListerAsync(string? statut)
+    /// <summary>Admin : demandes paginées, en attente d'abord, puis les plus récentes (envoi puis n°).</summary>
+    public async Task<PagedResultDto<PieceIdentiteDto>> ListerAsync(string? statut, Pagination pagination)
     {
-        var requete = _context.PiecesIdentite.AsNoTracking().Include(p => p.Utilisateur).Include(p => p.DecidePar).AsQueryable();
+        var requete = _context.PiecesIdentite.AsNoTracking().AsQueryable();
         if (!string.IsNullOrWhiteSpace(statut))
         {
             if (int.TryParse(statut, out _) || !Enum.TryParse<StatutPieceIdentite>(statut.Trim(), true, out var s) || !Enum.IsDefined(s))
@@ -119,12 +122,12 @@ public class IdentiteServices
             }
             requete = requete.Where(p => p.Statut == s);
         }
-        var pieces = await requete
+        var (pieces, total) = await requete
             .OrderBy(p => p.Statut == StatutPieceIdentite.EnAttente ? 0 : 1)
             .ThenByDescending(p => p.DateEnvoi).ThenByDescending(p => p.Id)
-            .Take(200)
-            .ToListAsync();
-        return pieces.Select(p => VersDto(p, p.Utilisateur, p.DecidePar)).ToList();
+            .Include(p => p.Utilisateur).Include(p => p.DecidePar)
+            .PageAsync(pagination);
+        return PagedResultDto<PieceIdentiteDto>.Creer(pieces.Select(p => VersDto(p, p.Utilisateur, p.DecidePar)).ToList(), pagination, total);
     }
 
     /// <summary>Fichier recto / verso d'une demande (admin uniquement : vérifié par la route).</summary>
@@ -138,13 +141,11 @@ public class IdentiteServices
             "verso" => piece.CheminVerso ?? throw new NotFoundException("Aucun verso n'a été envoyé pour cette demande"),
             _ => throw new InvalidOperationException("Indiquez « recto » ou « verso »")
         };
-        var complet = Path.GetFullPath(Path.Combine(DossierRacine, chemin));
-        if (!complet.StartsWith(Path.GetFullPath(DossierRacine) + Path.DirectorySeparatorChar) || !File.Exists(complet))
-        {
-            throw new NotFoundException("Le fichier est introuvable sur le serveur");
-        }
-        var pdf = complet.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase);
-        return (new FileStream(complet, FileMode.Open, FileAccess.Read), pdf ? "application/pdf" : "image/jpeg",
+        // Clé contrôlée (ni « .. » ni chemin absolu) : impossible de sortir de « identites/ ».
+        var flux = await _stockage.OuvrirAsync(ClesStockage.Cle(ClesStockage.Identites, chemin))
+            ?? throw new NotFoundException("Le fichier est introuvable sur le serveur");
+        var pdf = chemin.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase);
+        return (flux, pdf ? "application/pdf" : "image/jpeg",
             $"identite-{id:D6}-{face.ToLowerInvariant()}{(pdf ? ".pdf" : ".jpg")}");
     }
 
@@ -159,6 +160,8 @@ public class IdentiteServices
         piece.Utilisateur!.IdentiteVerifiee = true;
         piece.Utilisateur.DateVerificationIdentite = maintenant;
         await _context.SaveChangesAsync();
+        // Badge « identité vérifiée » visible tout de suite sur ses annonces (sinon après 2 min de cache).
+        await _cacheHotes.InvaliderAsync(piece.UtilisateurId);
 
         await _notificationServices.IdentiteValideeAsync(piece.Utilisateur, piece);
         await _journal.EnregistrerAsync("identite.valider", "Utilisateur", piece.UtilisateurId,
@@ -219,32 +222,37 @@ public class IdentiteServices
         }
     }
 
-    /// <summary>Image réencodée en JPEG (EXIF et position GPS retirés), PDF copié tel quel ; chemin relatif à Storage/identites.</summary>
-    private static async Task<string> EnregistrerAsync(IFormFile fichier, string dossier, int utilisateurId)
+    /// <summary>Image réencodée en JPEG (EXIF et position GPS retirés), PDF copié tel quel ; chemin relatif à « identites/ ».</summary>
+    private async Task<string> EnregistrerAsync(IFormFile fichier, int utilisateurId)
     {
-        Directory.CreateDirectory(dossier);
         var pdf = Path.GetExtension(fichier.FileName).Equals(".pdf", StringComparison.OrdinalIgnoreCase);
-        var nom = $"{Guid.NewGuid():N}{(pdf ? ".pdf" : ".jpg")}";
-        var chemin = Path.Combine(dossier, nom);
+        var chemin = $"{utilisateurId}/{Guid.NewGuid():N}{(pdf ? ".pdf" : ".jpg")}";
+        var cle = ClesStockage.Cle(ClesStockage.Identites, chemin);
         await using var source = fichier.OpenReadStream();
         if (pdf)
         {
-            await using var cible = new FileStream(chemin, FileMode.CreateNew);
-            await source.CopyToAsync(cible);
+            await _stockage.EnregistrerAsync(cle, source, "application/pdf");
         }
         else
         {
             using var image = await TraitementImages.ChargerAsync(source, TailleMaxImage);
-            await TraitementImages.EnregistrerJpegAsync(image, chemin);
+            await _stockage.EnregistrerAsync(cle, new MemoryStream(TraitementImages.Jpeg(image)), "image/jpeg");
         }
-        return Path.Combine(utilisateurId.ToString(), nom);
+        return chemin;
     }
 
-    private void SupprimerFichiers(params string?[] chemins)
+    private async Task SupprimerFichiersAsync(params string?[] chemins)
     {
         foreach (var chemin in chemins.Where(c => c is not null))
         {
-            try { File.Delete(Path.Combine(DossierRacine, chemin!)); } catch (IOException) { }
+            try
+            {
+                await _stockage.SupprimerAsync(ClesStockage.Cle(ClesStockage.Identites, chemin!));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Pièce d'identité orpheline non supprimée ({Chemin})", chemin);
+            }
         }
     }
 

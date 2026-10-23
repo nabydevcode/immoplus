@@ -15,7 +15,8 @@ import {
   Users,
 } from "lucide-react";
 import { useAuth } from "../../context/auth";
-import { Badge, MessageErreur, Onglets } from "../../components/admin/ui";
+import { Badge, MessageErreur, Onglets, VoirPlus } from "../../components/admin/ui";
+import { useListeAOnglets } from "../../components/admin/pagination";
 import {
   classeBoutonDanger,
   classeBoutonPrincipal,
@@ -23,7 +24,6 @@ import {
   formaterDate,
   formaterMontant,
   formaterReference,
-  useChargement,
 } from "../../components/admin/outils";
 import ReponseDemande from "../../components/sejour/ReponseDemande";
 import { localisation } from "../../components/sejour/equipements";
@@ -59,22 +59,51 @@ const messagesVides: Record<Filtre, string> = {
   Passees: "Aucune réservation passée.",
 };
 
+/** Onglets demandés à l'API (reservation/lister?filtre=…), avec le même calcul local tant qu'elle n'est pas paginée. */
+const ONGLETS = ["Demandes", "AVenir", "AEvaluer", "Passees"] as const;
+const requeteOnglet = (f: Filtre) => `filtre=${f}`;
+const estDemande = (r: ReservationDto) => r.statut === "DemandeEnvoyee";
+const estAVenir = (r: ReservationDto, aujourdhui: string) =>
+  (r.statut === "EnAttente" || r.statut === "Confirmee") && jour(r.dateDepart) >= aujourdhui;
+const dansOnglet = (f: Filtre, r: ReservationDto) => {
+  const aujourdhui = jourLocal();
+  if (f === "Demandes") return estDemande(r);
+  if (f === "AVenir") return estAVenir(r, aujourdhui);
+  const passee = !estDemande(r) && !estAVenir(r, aujourdhui);
+  return f === "AEvaluer" ? passee && avisHotePossible(r, aujourdhui) : passee;
+};
+// Demandes : les plus anciennes d'abord (délai de réponse) ; à venir : par arrivée ; passées : les plus récentes d'abord.
+const trier = (f: Filtre, a: ReservationDto, b: ReservationDto) =>
+  f === "Demandes"
+    ? a.dateCreation.localeCompare(b.dateCreation)
+    : f === "AVenir"
+      ? a.dateArrivee.localeCompare(b.dateArrivee)
+      : b.dateArrivee.localeCompare(a.dateArrivee);
+const LOCAL = { dansOnglet, trier };
+
 /** Réservations des séjours courts du bailleur : demandes à accepter ou refuser, séjours à venir et passés. */
 export default function ReservationsRecues() {
   const { estConnecte, roleUtilisateur, utilisateurId } = useAuth();
   const lienConnexion = useLienConnexion();
   const estBailleur = estConnecte && roleUtilisateur === "Bailleur";
-  // L'API ne renvoie au bailleur que les réservations de ses logements.
-  const { donnees, chargement, erreur, recharger } = useChargement<ReservationDto[]>(
-    estBailleur ? "reservation/lister" : null,
-  );
   const [aujourdhui] = useState(jourLocal);
   const [filtreChoisi, setFiltre] = useState<Filtre | null>(null);
+  const [ongletDemande, setOngletDemande] = useState<Filtre>("Demandes");
+  // L'API ne renvoie au bailleur que les réservations de ses logements ; seul l'onglet affiché est chargé.
+  const liste = useListeAOnglets<ReservationDto, Filtre>({
+    base: estBailleur ? "reservation/lister" : null,
+    onglet: filtreChoisi ?? ongletDemande,
+    onglets: ONGLETS,
+    requeteOnglet,
+    mode: "progressif",
+    local: LOCAL,
+  });
+  const { chargement, erreur, recharger, compteurs } = liste;
   const [confirmation, setConfirmation] = useState<string | null>(null);
   const [volet, setVolet] = useState<{ id: number; volet: Volet } | null>(null);
   const basculer = (id: number, v: Volet) => setVolet(volet?.id === id && volet.volet === v ? null : { id, volet: v });
   // Messages non lus en temps réel : pastilles des onglets et des boutons « Messages » de chaque réservation.
-  const nonLus = useNonLus(estBailleur);
+  const nonLus = useNonLus(estBailleur, ONGLETS);
 
   if (!estBailleur) {
     return (
@@ -87,27 +116,21 @@ export default function ReservationsRecues() {
     );
   }
 
-  const toutes = donnees ?? [];
-  const demandes = toutes
-    .filter((r) => r.statut === "DemandeEnvoyee")
-    .sort((a, b) => a.dateCreation.localeCompare(b.dateCreation));
-  const aVenir = toutes
-    .filter((r) => (r.statut === "EnAttente" || r.statut === "Confirmee") && jour(r.dateDepart) >= aujourdhui)
-    .sort((a, b) => a.dateArrivee.localeCompare(b.dateArrivee));
-  const passees = toutes
-    .filter((r) => !demandes.includes(r) && !aVenir.includes(r))
-    .sort((a, b) => b.dateArrivee.localeCompare(a.dateArrivee));
-  const aEvaluer = passees.filter((r) => avisHotePossible(r, aujourdhui));
+  const nb = (f: Filtre) => compteurs[f] ?? 0;
+  /** « Demandes (3) », ou « Demandes » si l'API ne fournit pas ce compteur. */
+  const libelle = (f: Filtre, texte: string) => (compteurs[f] !== undefined ? `${texte} (${compteurs[f]})` : texte);
+  // L'onglet « À évaluer » n'apparaît que s'il y a des voyageurs à évaluer (ou si leur nombre est inconnu).
+  const avecAEvaluer = liste.compteursCharges && compteurs.AEvaluer !== 0;
   const nonLusDe1 = (r: ReservationDto) =>
     nonLus.charge ? (nonLus.parReservation.get(r.id) ?? 0) : (r.messagesNonLus ?? 0);
-  const nonLusDe = (liste: ReservationDto[]) => liste.reduce((somme, r) => somme + nonLusDe1(r), 0);
   // Sans demande en attente, la page s'ouvre sur les voyageurs à évaluer (lien de l'e-mail « Séjour terminé »).
-  const filtre: Filtre =
-    filtreChoisi === "AEvaluer" && aEvaluer.length === 0
-      ? "Passees"
-      : (filtreChoisi ?? (demandes.length === 0 && aEvaluer.length > 0 ? "AEvaluer" : "Demandes"));
-  const affichees =
-    filtre === "Demandes" ? demandes : filtre === "AVenir" ? aVenir : filtre === "AEvaluer" ? aEvaluer : passees;
+  const filtreParDefaut: Filtre = compteurs.Demandes === 0 && nb("AEvaluer") > 0 ? "AEvaluer" : "Demandes";
+  if (filtreChoisi === null && ongletDemande !== filtreParDefaut) setOngletDemande(filtreParDefaut);
+  // Plus aucun voyageur à évaluer (avis envoyé) : retour sur les réservations passées.
+  if (filtreChoisi === "AEvaluer" && compteurs.AEvaluer === 0) setFiltre("Passees");
+  const filtre: Filtre = filtreChoisi ?? ongletDemande;
+  const affichees = liste.elements;
+  const aucune = ONGLETS.every((f) => compteurs[f] === 0);
 
   return (
     <div className="px-4 sm:px-6 py-10">
@@ -125,12 +148,18 @@ export default function ReservationsRecues() {
             setVolet(null);
           }}
           options={[
-            { valeur: "Demandes", label: `Demandes (${demandes.length})`, pastille: nonLusDe(demandes) },
-            { valeur: "AVenir", label: `À venir (${aVenir.length})`, pastille: nonLusDe(aVenir) },
-            ...(aEvaluer.length > 0
-              ? [{ valeur: "AEvaluer" as const, label: `À évaluer (${aEvaluer.length})`, pastille: nonLusDe(aEvaluer) }]
+            { valeur: "Demandes", label: libelle("Demandes", "Demandes"), pastille: nonLus.parFiltre.Demandes },
+            { valeur: "AVenir", label: libelle("AVenir", "À venir"), pastille: nonLus.parFiltre.AVenir },
+            ...(avecAEvaluer || filtre === "AEvaluer"
+              ? [
+                  {
+                    valeur: "AEvaluer" as const,
+                    label: libelle("AEvaluer", "À évaluer"),
+                    pastille: nonLus.parFiltre.AEvaluer,
+                  },
+                ]
               : []),
-            { valeur: "Passees", label: `Passées (${passees.length})`, pastille: nonLusDe(passees) },
+            { valeur: "Passees", label: libelle("Passees", "Passées"), pastille: nonLus.parFiltre.Passees },
           ]}
         />
 
@@ -144,7 +173,7 @@ export default function ReservationsRecues() {
           <div className="bg-white rounded-2xl shadow-sm border border-black/5 py-14 px-6 text-center">
             <CalendarX size={32} className="mx-auto text-immo-gold mb-3" />
             <p className="text-gray-500">{messagesVides[filtre]}</p>
-            {toutes.length === 0 && (
+            {aucune && (
               <Link to="/bailleur/logements" className="inline-block mt-3 text-sm font-semibold text-immo-gold">
                 Gérer mes logements et leur calendrier
               </Link>
@@ -333,7 +362,6 @@ export default function ReservationsRecues() {
                       interlocuteur={r.locataireNom}
                       confirmee={r.statut === "Confirmee" || r.statut === "Terminee"}
                       fermee={!messagerieOuverte(r, aujourdhui)}
-                      onLu={nonLus > 0 ? recharger : undefined}
                     />
                   )}
                   {ouvert === "evaluer" && (
@@ -369,6 +397,14 @@ export default function ReservationsRecues() {
                 </article>
               );
             })}
+            <VoirPlus
+              aPlus={liste.aPlus}
+              chargement={liste.chargementPlus}
+              onClick={liste.chargerPlus}
+              affiches={affichees.length}
+              total={liste.total}
+              libelle="Voir plus de réservations"
+            />
           </div>
         )}
       </div>

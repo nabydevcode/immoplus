@@ -16,20 +16,23 @@ public class PhotoServices
     private static readonly string[] ExtensionsAutorisees = [".jpg", ".jpeg", ".png", ".webp"];
 
     private readonly AppDbContext _context;
-    private readonly IWebHostEnvironment _environnement;
+    private readonly IStockageFichiers _stockage;
+    private readonly ILogger<PhotoServices> _logger;
 
-    public PhotoServices(AppDbContext context, IWebHostEnvironment environnement)
+    public PhotoServices(AppDbContext context, IStockageFichiers stockage, ILogger<PhotoServices> logger)
     {
         _context = context;
-        _environnement = environnement;
+        _stockage = stockage;
+        _logger = logger;
     }
 
-    private string DossierRacine => Path.Combine(_environnement.ContentRootPath, "Storage", "photos");
-    /// <summary>Cache des miniatures (480 px) : régénérables à tout moment depuis les photos.</summary>
-    private string DossierMiniatures => Path.Combine(_environnement.ContentRootPath, "Storage", "miniatures");
+    private static string ClePhoto(PhotoAppartement photo) => ClesStockage.Cle(ClesStockage.Photos, photo.CheminStockage);
 
-    /// <summary>Miniature d'une photo : même dossier et même nom que la photo, en .jpg, sous Storage/miniatures.</summary>
-    private string CheminMiniature(PhotoAppartement photo) => Path.Combine(DossierMiniatures, Path.ChangeExtension(photo.CheminStockage, ".jpg"));
+    /// <summary>
+    /// Miniature (480 px) d'une photo, régénérable à tout moment : même dossier et même nom que la photo, en .jpg, sous « miniatures/ ».
+    /// </summary>
+    private static string CleMiniature(PhotoAppartement photo) =>
+        ClesStockage.Cle(ClesStockage.Miniatures, Path.ChangeExtension(photo.CheminStockage.Replace('\\', '/'), ".jpg"));
 
     public async Task<PhotoAppartementDto> AjouterAsync(int appartementId, IFormFile fichier, bool est360, string? libelle,
         int utilisateurId, RoleUtilisateur role)
@@ -63,13 +66,16 @@ public class PhotoServices
 
         // Photo allégée (JPEG 1920 px, panorama 6000 px, sans EXIF) et sa miniature : l'original envoyé n'est pas conservé.
         var nomStocke = $"{Guid.NewGuid()}.jpg";
-        var cheminStockage = Path.Combine(appartementId.ToString(), nomStocke);
+        var cheminStockage = $"{appartementId}/{nomStocke}";
+        byte[] jpeg, miniature;
         await using (var source = fichier.OpenReadStream())
         using (var image = await TraitementImages.ChargerAsync(source, est360 ? TraitementImages.TailleMaxPanorama : TraitementImages.TailleMaxPhoto))
         {
-            await TraitementImages.EnregistrerJpegAsync(image, Path.Combine(DossierRacine, cheminStockage));
-            await TraitementImages.EnregistrerMiniatureAsync(image, Path.Combine(DossierMiniatures, cheminStockage));
+            jpeg = TraitementImages.Jpeg(image);
+            miniature = TraitementImages.MiniatureJpeg(image);
         }
+        await _stockage.EnregistrerAsync(ClesStockage.Cle(ClesStockage.Photos, cheminStockage), new MemoryStream(jpeg), "image/jpeg");
+        await _stockage.EnregistrerAsync(ClesStockage.Cle(ClesStockage.Miniatures, cheminStockage), new MemoryStream(miniature), "image/jpeg");
 
         var photo = new PhotoAppartement
         {
@@ -99,11 +105,16 @@ public class PhotoServices
         _context.PhotosAppartement.Remove(photo);
         await _context.SaveChangesAsync();
 
-        foreach (var chemin in new[] { Path.Combine(DossierRacine, photo.CheminStockage), CheminMiniature(photo) })
+        foreach (var cle in new[] { ClePhoto(photo), CleMiniature(photo) })
         {
-            if (File.Exists(chemin))
+            try
             {
-                File.Delete(chemin);
+                await _stockage.SupprimerAsync(cle);
+            }
+            catch (Exception ex)
+            {
+                // La photo n'est plus référencée : un fichier orphelin ne gêne personne, l'action reste réussie.
+                _logger.LogWarning(ex, "Fichier de la photo {Id} non supprimé ({Cle})", photo.Id, cle);
             }
         }
     }
@@ -113,42 +124,69 @@ public class PhotoServices
     /// </summary>
     /// <param name="miniature">Miniature 480 px (générée et mise en cache à la première demande pour les photos plus anciennes).</param>
     /// <returns>Flux et nom du fichier servi (son extension donne le type MIME).</returns>
-    public async Task<(Stream Flux, string NomFichier)> OuvrirAsync(int photoId, int? utilisateurId, RoleUtilisateur? role, bool miniature = false)
+    public async Task<(Stream Flux, string NomFichier)> OuvrirAsync(int photoId, int? utilisateurId, RoleUtilisateur? role, bool miniature = false) =>
+        await OuvrirAsync((await AccesAsync(photoId, utilisateurId, role)).Photo, miniature);
+
+    /// <summary>
+    /// Photo accessible à l'appelant (404 sinon). Protegee : réservée au propriétaire et à l'admin (annonce supprimée ou hôte
+    /// désactivé) — jamais mise en cache public ; sinon photo publique, cacheable par les navigateurs et les proxys.
+    /// </summary>
+    public async Task<(PhotoAppartement Photo, bool Protegee)> AccesAsync(int photoId, int? utilisateurId, RoleUtilisateur? role)
     {
         var photo = await _context.PhotosAppartement.AsNoTracking()
             .Include(p => p.Appartement).ThenInclude(a => a!.Bailleur)
             .FirstOrDefaultAsync(p => p.Id == photoId);
+        var protegee = photo?.Appartement is { } logement && AppartementServices.PhotosProtegees(logement);
         var autorise = photo?.Appartement is { } appartement
-            && (!AppartementServices.PhotosProtegees(appartement)
+            && (!protegee
                 || role == RoleUtilisateur.Admin
                 || (utilisateurId is not null && appartement.BailleurId == utilisateurId));
-        var chemin = photo is null || !autorise ? null : Path.Combine(DossierRacine, photo.CheminStockage);
-        if (chemin is null || !File.Exists(chemin))
+        if (photo is null || !autorise)
         {
             throw new NotFoundException("Cette photo n'existe pas");
         }
+        return (photo, protegee);
+    }
+
+    /// <summary>Fichier d'une photo dont l'accès a été vérifié par <see cref="AccesAsync"/>.</summary>
+    public async Task<(Stream Flux, string NomFichier)> OuvrirAsync(PhotoAppartement photo, bool miniature)
+    {
+        var clePhoto = ClePhoto(photo);
         if (miniature)
         {
-            var cheminMiniature = CheminMiniature(photo!);
-            if (!File.Exists(cheminMiniature))
+            var cleMiniature = CleMiniature(photo);
+            if (await _stockage.OuvrirAsync(cleMiniature) is { } fluxMiniature)
             {
+                return (fluxMiniature, Path.GetFileName(cleMiniature));
+            }
+            await using (var source = await _stockage.OuvrirAsync(clePhoto))
+            {
+                if (source is null)
+                {
+                    throw new NotFoundException("Cette photo n'existe pas");
+                }
+                byte[] contenu;
                 try
                 {
-                    await using var source = new FileStream(chemin, FileMode.Open, FileAccess.Read);
                     using var image = await TraitementImages.ChargerAsync(source, TraitementImages.TailleMiniature);
-                    await TraitementImages.EnregistrerJpegAsync(image, cheminMiniature, TraitementImages.QualiteMiniature);
+                    contenu = TraitementImages.Jpeg(image, TraitementImages.QualiteMiniature);
                 }
                 catch (InvalidOperationException)
                 {
                     // Photo ancienne illisible par la bibliothèque : on sert la photo complète plutôt qu'une erreur.
-                    return (new FileStream(chemin, FileMode.Open, FileAccess.Read), Path.GetFileName(chemin));
+                    return (await _stockage.OuvrirAsync(clePhoto) ?? throw new NotFoundException("Cette photo n'existe pas"), Path.GetFileName(clePhoto));
                 }
+                // Mise en cache pour les demandes suivantes (et les autres instances de l'API).
+                await _stockage.EnregistrerAsync(cleMiniature, new MemoryStream(contenu), "image/jpeg");
+                return (new MemoryStream(contenu), Path.GetFileName(cleMiniature));
             }
-            return (new FileStream(cheminMiniature, FileMode.Open, FileAccess.Read), Path.GetFileName(cheminMiniature));
         }
         // Type MIME d'après le fichier stocké (les nouvelles photos sont réencodées en JPEG quel que soit le nom d'origine).
-        return (new FileStream(chemin, FileMode.Open, FileAccess.Read), Path.GetFileName(chemin));
+        return (await _stockage.OuvrirAsync(clePhoto) ?? throw new NotFoundException("Cette photo n'existe pas"), Path.GetFileName(clePhoto));
     }
+
+    /// <summary>Durée de cache navigateur / proxy d'une photo publique (une photo retirée disparaît des caches au plus tard après ce délai).</summary>
+    public static readonly TimeSpan DureeCachePublic = TimeSpan.FromDays(1);
 
     public static PhotoAppartementDto VersDto(PhotoAppartement p) => new()
     {

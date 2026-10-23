@@ -8,3 +8,8 @@ obj/
 Storage/documents/
 Storage/photos/
 sms.env
+Sauvegardes/
+sauvegarde-db-*/
+Storage/identites/
+Storage/miniatures/
+Storage/etats-des-lieux/

@@ -23,7 +23,7 @@ public class ReservationTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFactory
         Assert.Equal(2, demande.NombreVoyageurs);
         Assert.Equal(320_000m, demande.MontantTotal);
         Assert.Null(demande.PayerAvant);
-        Assert.Contains(f.Smtp.EmailsPour(bailleur.Email), e => e.Sujet.Contains($"Réservation n° {demande.Id:D6}"));
+        Assert.Contains(await f.EmailsPourAsync(bailleur.Email), e => e.Sujet.Contains($"Réservation n° {demande.Id:D6}"));
 
         // Pas de paiement tant que l'hôte n'a pas accepté.
         await admin.Client.PayerReservation(demande.Id, 320_000m).Erreur(HttpStatusCode.BadRequest);
@@ -138,7 +138,7 @@ public class ReservationTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFactory
         Assert.Equal("Paiement non reçu sous 24 h", annulee.MotifAnnulation);
         Assert.Equal(0m, annulee.MontantARembourser);
         Assert.Null(annulee.PayerAvant);
-        Assert.Contains(f.Smtp.EmailsPour(voyageur.Email), e => e.Sujet.Contains($"n° {reservation.Id:D6}") && e.Sujet.Contains("annul", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(await f.EmailsPourAsync(voyageur.Email), e => e.Sujet.Contains($"n° {reservation.Id:D6}") && e.Sujet.Contains("annul", StringComparison.OrdinalIgnoreCase));
 
         // Les dates sont de nouveau réservables.
         await autre.ReserverOk(logement.Id, 15, 3);
@@ -176,7 +176,7 @@ public class ReservationTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFactory
                 r.DateReponseHote = DateTime.UtcNow.AddHours(-25);
             }
         });
-        var reservations = await voyageur.Client.GetAsync("/reservation/lister").Attendre<List<ReservationResponseDto>>();
+        var reservations = await voyageur.Client.GetAsync("/reservation/lister").AttendreDonnees<ReservationResponseDto>();
         Assert.Equal("Annulee", reservations.Single(r => r.Id == sansPaiement.Id).Statut);
         Assert.Equal("EnAttente", reservations.Single(r => r.Id == avecAcompte.Id).Statut);
     }
@@ -225,14 +225,14 @@ public class ReservationTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFactory
         var terminee = await voyageur.Client.Reservation(reservation.Id);
         Assert.Equal("Terminee", terminee.Statut);
         Assert.Equal(DateOnly.FromDateTime(Api.Aujourdhui.AddDays(14)), terminee.AvisPossibleJusquau);
-        Assert.Contains(f.Smtp.EmailsPour(voyageur.Email), e => e.Sujet.Contains("Séjour terminé") && e.Sujet.Contains($"{reservation.Id:D6}"));
-        Assert.Contains(f.Smtp.EmailsPour(bailleur.Email), e => e.Sujet.Contains("Séjour terminé") && e.Sujet.Contains($"{reservation.Id:D6}"));
+        Assert.Contains(await f.EmailsPourAsync(voyageur.Email), e => e.Sujet.Contains("Séjour terminé") && e.Sujet.Contains($"{reservation.Id:D6}"));
+        Assert.Contains(await f.EmailsPourAsync(bailleur.Email), e => e.Sujet.Contains("Séjour terminé") && e.Sujet.Contains($"{reservation.Id:D6}"));
         Assert.Equal("EnAttente", (await voyageur.Client.Reservation(nonPayee.Id)).Statut);
 
         // Une seule fois : relire ne renvoie pas d'email.
-        var avant = f.Smtp.EmailsPour(voyageur.Email).Count(e => e.Sujet.Contains("Séjour terminé"));
+        var avant = (await f.EmailsPourAsync(voyageur.Email)).Count(e => e.Sujet.Contains("Séjour terminé"));
         await voyageur.Client.GetAsync("/reservation/lister").Verifier(HttpStatusCode.OK);
-        Assert.Equal(avant, f.Smtp.EmailsPour(voyageur.Email).Count(e => e.Sujet.Contains("Séjour terminé")));
+        Assert.Equal(avant, (await f.EmailsPourAsync(voyageur.Email)).Count(e => e.Sujet.Contains("Séjour terminé")));
 
         // Un séjour terminé ne s'annule plus et accepte un avis du voyageur.
         await voyageur.Client.PostJson($"/reservation/{reservation.Id}/annuler").Erreur(HttpStatusCode.Conflict);

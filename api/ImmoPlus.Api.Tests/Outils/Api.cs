@@ -42,6 +42,10 @@ public static class Api
         return await reponse.Lire<T>();
     }
 
+    /// <summary>Liste paginée (PagedResultDto) : 200 attendu, éléments de la page.</summary>
+    public static async Task<List<T>> AttendreDonnees<T>(this Task<HttpResponseMessage> requete) =>
+        (await requete.Attendre<PagedResultDto<T>>()).Donnees;
+
     public static async Task<HttpResponseMessage> Verifier(this HttpResponseMessage reponse, HttpStatusCode attendu)
     {
         if (reponse.StatusCode != attendu)

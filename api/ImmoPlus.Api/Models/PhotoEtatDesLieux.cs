@@ -9,7 +9,7 @@ public class PhotoEtatDesLieux
     public int ReservationId { get; set; }
     public MomentEtatDesLieux Moment { get; set; }
     public int AuteurId { get; set; }
-    /// <summary>Chemin relatif à Storage/etats-des-lieux ({reservationId}/{guid}.ext).</summary>
+    /// <summary>Chemin relatif à « etats-des-lieux/ » (clé de stockage : disque Storage/ ou S3) ({reservationId}/{guid}.ext).</summary>
     public string Chemin { get; set; } = string.Empty;
     public string? Commentaire { get; set; }
     public DateTime DateCreation { get; set; } = DateTime.UtcNow;

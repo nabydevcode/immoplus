@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { Lock, Send } from "lucide-react";
 import { apiClient } from "../../api/client";
 import type { MessageDto } from "../../types/models";
 import { MessageErreur } from "../admin/ui";
-import { classeBoutonPrincipal, classeChamp, messageErreur, useChargement } from "../admin/outils";
+import { classeBoutonPrincipal, classeChamp, messageErreur } from "../admin/outils";
+import { useFilMessages } from "./useFilMessages";
 import { contientCoordonnees, signalerMessages } from "./evenements";
 import { signalerEcriture, useTempsReel } from "./tempsReel";
 import Signaler from "../signalement/Signaler";
@@ -45,9 +46,8 @@ export default function FilMessages({
   /** Appelé une fois les messages reçus marqués comme lus. */
   onLu?: () => void;
 }) {
-  const { donnees, setDonnees, chargement, erreur, recharger } = useChargement<MessageDto[]>(
-    `reservation/${reservationId}/messages`,
-  );
+  const fil = useFilMessages(reservationId);
+  const { messages: donnees, chargement, erreur, recharger, ajouter, modifier } = fil;
   const [contenu, setContenu] = useState("");
   const [erreurEnvoi, setErreurEnvoi] = useState<string | null>(null);
   const [enCours, setEnCours] = useState(false);
@@ -77,20 +77,16 @@ export default function FilMessages({
       // Relecture du fil : le message reçu est aussitôt marqué comme lu (accusé « Lu » chez l'auteur).
       if (!lectureSeule) recharger();
     }
-    setDonnees((l) => (l && !l.some((x) => x.id === m.id) ? [...l, m] : l));
+    ajouter([m]);
   });
   // Lecture par un participant : ses messages reçus passent à « Lu ». L'admin (lecture seule) reçoit aussi ces
   // événements via le groupe « admins » du hub : le fil se met à jour en direct.
   useTempsReel("messagesLus", (lecture) => {
     if (lecture.reservationId !== reservationId) return;
-    setDonnees(
-      (l) =>
-        l &&
-        l.map((m) =>
-          !m.dateLecture && (lectureSeule ? m.auteurId !== lecture.lecteurId : m.deMoi)
-            ? { ...m, dateLecture: lecture.dateLecture }
-            : m,
-        ),
+    modifier((m) =>
+      !m.dateLecture && (lectureSeule ? m.auteurId !== lecture.lecteurId : m.deMoi)
+        ? { ...m, dateLecture: lecture.dateLecture }
+        : m,
     );
   });
   useTempsReel(
@@ -104,8 +100,8 @@ export default function FilMessages({
     !lectureSeule,
   );
 
-  // À chaque nouveau message : défilement vers le bas.
-  const nombre = donnees?.length ?? 0;
+  // À chaque nouveau message (le plus récent change) : défilement vers le bas.
+  const dernierId = donnees?.at(-1)?.id ?? 0;
   const charge = donnees !== null;
   useEffect(() => {
     if (!charge) return;
@@ -117,7 +113,21 @@ export default function FilMessages({
       premierChargement.current = false;
       rappelLu.current?.();
     }
-  }, [nombre, charge, lectureSeule]);
+  }, [dernierId, charge, lectureSeule]);
+
+  // « Messages précédents » : les messages plus anciens s'ajoutent en haut sans déplacer ce qu'on lisait.
+  const premierId = donnees?.[0]?.id ?? 0;
+  const hauteurAvant = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const zone = liste.current;
+    if (!zone || hauteurAvant.current === null) return;
+    zone.scrollTop += zone.scrollHeight - hauteurAvant.current;
+    hauteurAvant.current = null;
+  }, [premierId]);
+  const voirPrecedents = () => {
+    hauteurAvant.current = liste.current?.scrollHeight ?? null;
+    void fil.chargerPrecedents();
+  };
 
   const envoyer = async (e: FormEvent) => {
     e.preventDefault();
@@ -131,7 +141,7 @@ export default function FilMessages({
     setEnCours(true);
     try {
       const message = await apiClient.post<MessageDto>(`reservation/${reservationId}/messages`, { contenu: texte });
-      setDonnees((l) => (l && !l.some((m) => m.id === message.id) ? [...l, message] : l));
+      ajouter([message]);
       setContenu("");
     } catch (err) {
       setErreurEnvoi(messageErreur(err, "Impossible d'envoyer le message."));
@@ -150,9 +160,19 @@ export default function FilMessages({
         aria-live="polite"
         aria-label={`Messages avec ${interlocuteur}`}
       >
+        {fil.aPrecedents && (
+          <button
+            type="button"
+            onClick={voirPrecedents}
+            disabled={fil.chargementPrecedents}
+            className="self-center text-xs font-semibold text-gray-600 bg-white border border-black/10 rounded-full px-3 py-1 hover:bg-gray-50 disabled:opacity-60"
+          >
+            {fil.chargementPrecedents ? "Chargement..." : "Messages précédents"}
+          </button>
+        )}
         {chargement ? (
           <p className="text-sm text-gray-500">Chargement des messages...</p>
-        ) : erreur ? (
+        ) : erreur && !donnees?.length ? (
           <MessageErreur>{erreur}</MessageErreur>
         ) : messages.length === 0 ? (
           <p className="text-sm text-gray-500 py-4 text-center">

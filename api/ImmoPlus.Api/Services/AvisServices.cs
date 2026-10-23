@@ -34,9 +34,13 @@ public class AvisServices
     private readonly ReservationServices _reservationServices;
     private readonly JournalServices _journal;
 
+    /// <summary>Badges des hôtes sur les annonces (listes et fiches) : 2 min, dans Redis s'il est configuré, sinon en mémoire.</summary>
+    private readonly ICacheHotes _cache;
+
     public AvisServices(AppDbContext context, NotificationServices notificationServices, ReservationServices reservationServices,
-        JournalServices journal)
+        JournalServices journal, ICacheHotes cache)
     {
+        _cache = cache;
         _journal = journal;
         _context = context;
         _notificationServices = notificationServices;
@@ -279,33 +283,58 @@ public class AvisServices
         return VersDto(avis);
     }
 
-    /// <summary>Avis publics (séjours et locations) sur un logement, du plus récent au plus ancien, avec les moyennes par critère.</summary>
-    public async Task<ListeAvisDto> ListerParAppartementAsync(int appartementId)
+    /// <summary>
+    /// Avis publics (séjours et locations) sur un logement, du plus récent au plus ancien, paginés. Moyenne, Nombre et moyennes
+    /// par critère portent sur TOUS les avis publics du logement (calculés en SQL), pas seulement sur la page.
+    /// </summary>
+    public async Task<ListeAvisDto> ListerParAppartementAsync(int appartementId, Pagination pagination, int? reservationId = null)
     {
         if (!await _context.Appartements.AnyAsync(a => a.Id == appartementId))
         {
             throw new NotFoundException("Cet appartement n'existe pas");
         }
-        var avis = await _context.Avis.AsNoTracking()
+        var publics = _context.Avis.AsNoTracking()
+            .Where(a => a.AppartementId == appartementId && SensVersLogement.Contains(a.Sens) && !a.Masque);
+        // AVG sur numeric : moyenne exacte, arrondie ensuite comme Moyenne() (1 décimale, demi au-dessus).
+        var stats = await publics
+            .GroupBy(a => 1)
+            .Select(g => new
+            {
+                Nombre = g.Count(),
+                Note = g.Average(a => (decimal)a.Note),
+                Proprete = g.Average(a => (decimal?)a.Proprete),
+                Communication = g.Average(a => (decimal?)a.Communication),
+                Emplacement = g.Average(a => (decimal?)a.Emplacement),
+                RapportQualitePrix = g.Average(a => (decimal?)a.RapportQualitePrix)
+            })
+            .FirstOrDefaultAsync();
+        var nombre = stats?.Nombre ?? 0;
+        var affiches = reservationId is null ? publics : publics.Where(a => a.ReservationId == reservationId);
+        var avis = nombre <= pagination.Saut ? [] : await affiches
             .Include(a => a.Auteur)
-            .Where(a => a.AppartementId == appartementId && SensVersLogement.Contains(a.Sens) && !a.Masque)
             .OrderByDescending(a => a.DateCreation).ThenByDescending(a => a.Id)
+            .Skip(pagination.Saut).Take(pagination.Taille)
             .ToListAsync();
 
         return new ListeAvisDto
         {
-            Moyenne = Moyenne(avis.Select(a => (int?)a.Note)),
-            Nombre = avis.Count,
-            Moyennes = avis.Count == 0 ? null : new MoyennesAvisDto
+            Moyenne = Arrondir(stats?.Note),
+            Nombre = nombre,
+            Moyennes = stats is null ? null : new MoyennesAvisDto
             {
-                Proprete = Moyenne(avis.Select(a => a.Proprete)),
-                Communication = Moyenne(avis.Select(a => a.Communication)),
-                Emplacement = Moyenne(avis.Select(a => a.Emplacement)),
-                RapportQualitePrix = Moyenne(avis.Select(a => a.RapportQualitePrix))
+                Proprete = Arrondir(stats.Proprete),
+                Communication = Arrondir(stats.Communication),
+                Emplacement = Arrondir(stats.Emplacement),
+                RapportQualitePrix = Arrondir(stats.RapportQualitePrix)
             },
-            Avis = avis.Select(VersDto).ToList()
+            Avis = avis.Select(VersDto).ToList(),
+            PageActuelle = pagination.Page,
+            TaillePage = pagination.Taille,
+            TotalPages = (int)Math.Ceiling(nombre / (double)pagination.Taille)
         };
     }
+
+    private static decimal? Arrondir(decimal? moyenne) => moyenne is { } m ? Math.Round(m, 1, MidpointRounding.AwayFromZero) : null;
 
     /// <summary>Avis des hôtes et bailleurs sur un voyageur / locataire : visibles des hôtes, des admins et de l'intéressé.</summary>
     public async Task<ListeAvisDto> ListerParUtilisateurAsync(int cibleId, int utilisateurId, RoleUtilisateur role)
@@ -336,12 +365,13 @@ public class AvisServices
     /// <summary>Note moyenne (1 décimale) et nombre d'avis des voyageurs, par logement.</summary>
     public async Task<Dictionary<int, (decimal? Moyenne, int Nombre)>> NotesAppartementsAsync(ICollection<int> appartementIds)
     {
+        // Agrégat en SQL (index AppartementId) : plus de lecture de toutes les notes en mémoire.
         var notes = await _context.Avis.AsNoTracking()
             .Where(a => appartementIds.Contains(a.AppartementId) && SensVersLogement.Contains(a.Sens) && !a.Masque)
-            .Select(a => new { a.AppartementId, a.Note })
+            .GroupBy(a => a.AppartementId)
+            .Select(g => new { AppartementId = g.Key, Moyenne = g.Average(a => (decimal)a.Note), Nombre = g.Count() })
             .ToListAsync();
-        return notes.GroupBy(n => n.AppartementId)
-            .ToDictionary(g => g.Key, g => (Moyenne(g.Select(n => (int?)n.Note)), g.Count()));
+        return notes.ToDictionary(n => n.AppartementId, n => (Arrondir(n.Moyenne), n.Nombre));
     }
 
     /// <summary>
@@ -349,6 +379,29 @@ public class AvisServices
     /// Superhôte : ≥ 3 séjours terminés, note ≥ 4,7, taux de réponse ≥ 90 % (ou aucune demande à traiter)
     /// et aucune annulation par l'hôte sur les 12 derniers mois.
     /// </summary>
+    /// <param name="depuisCache">Annonces (listes et fiche) : badges relus au plus toutes les 2 min (affichage seulement, jamais une
+    /// règle métier) ; le profil public et le tableau de bord de l'hôte les calculent toujours à jour.</param>
+    public async Task<Dictionary<int, HoteDto>> StatistiquesHotesAsync(IEnumerable<int> hoteIds, bool depuisCache)
+    {
+        if (!depuisCache)
+        {
+            return await StatistiquesHotesAsync(hoteIds);
+        }
+        var ids = hoteIds.Distinct().ToList();
+        var resultat = await _cache.LireAsync(ids);
+        var manquants = ids.Where(id => !resultat.ContainsKey(id)).ToList();
+        if (manquants.Count > 0)
+        {
+            var calcules = await StatistiquesHotesAsync(manquants);
+            await _cache.EcrireAsync(calcules);
+            foreach (var (id, hote) in calcules)
+            {
+                resultat[id] = hote;
+            }
+        }
+        return resultat;
+    }
+
     public async Task<Dictionary<int, HoteDto>> StatistiquesHotesAsync(IEnumerable<int> hoteIds)
     {
         var ids = hoteIds.Distinct().ToList();
@@ -359,47 +412,57 @@ public class AvisServices
             .Where(u => ids.Contains(u.Id))
             .Select(u => new { u.Id, u.Nom, u.Statut, u.DateCreation, u.IdentiteVerifiee })
             .ToListAsync();
-        var datesAnnonces = await _context.Appartements.AsNoTracking()
-            .Where(a => ids.Contains(a.BailleurId) && a.DateCreation != null)
-            .Select(a => new { a.BailleurId, a.DateCreation })
-            .ToListAsync();
-        var notes = await _context.Avis.AsNoTracking()
-            .Where(a => ids.Contains(a.CibleId) && SensVersLogement.Contains(a.Sens) && !a.Masque)
-            .Select(a => new { a.CibleId, a.Note })
-            .ToListAsync();
-        var sejoursTermines = await _context.Reservations.AsNoTracking()
-            .Where(r => r.Statut == StatutReservation.Terminee && ids.Contains(r.Appartement!.BailleurId))
-            .GroupBy(r => r.Appartement!.BailleurId)
-            .Select(g => new { BailleurId = g.Key, Nombre = g.Count() })
-            .ToListAsync();
+        // Agrégats calculés en SQL, une ligne par hôte (la liste des annonces en affiche jusqu'à 200 à la fois).
+        var premieresAnnonces = (await _context.Appartements.AsNoTracking()
+                .Where(a => ids.Contains(a.BailleurId) && a.DateCreation != null)
+                .GroupBy(a => a.BailleurId)
+                .Select(g => new { BailleurId = g.Key, Premiere = g.Min(a => a.DateCreation) })
+                .ToListAsync())
+            .ToDictionary(d => d.BailleurId, d => d.Premiere);
+        var notes = (await _context.Avis.AsNoTracking()
+                .Where(a => ids.Contains(a.CibleId) && SensVersLogement.Contains(a.Sens) && !a.Masque)
+                .GroupBy(a => a.CibleId)
+                .Select(g => new { CibleId = g.Key, Nombre = g.Count(), Moyenne = g.Average(a => (decimal)a.Note) })
+                .ToListAsync())
+            .ToDictionary(n => n.CibleId);
+        var sejoursTermines = (await _context.Reservations.AsNoTracking()
+                .Where(r => r.Statut == StatutReservation.Terminee && ids.Contains(r.Appartement!.BailleurId))
+                .GroupBy(r => r.Appartement!.BailleurId)
+                .Select(g => new { BailleurId = g.Key, Nombre = g.Count() })
+                .ToListAsync())
+            .ToDictionary(s => s.BailleurId, s => s.Nombre);
         // Demandes à traiter sur 12 mois : celles auxquelles l'hôte a répondu, ou refusées faute de réponse sous 48 h.
-        var demandes = await _context.Reservations.AsNoTracking()
-            .Where(r => ids.Contains(r.Appartement!.BailleurId) && r.DateCreation >= depuis
-                && (r.DateReponseHote != null || r.MotifRefus == ReservationServices.MotifSansReponse))
-            .Select(r => new { r.Appartement!.BailleurId, r.DateCreation, r.DateReponseHote })
-            .ToListAsync();
+        var demandes = (await _context.Reservations.AsNoTracking()
+                .Where(r => ids.Contains(r.Appartement!.BailleurId) && r.DateCreation >= depuis
+                    && (r.DateReponseHote != null || r.MotifRefus == ReservationServices.MotifSansReponse))
+                .GroupBy(r => r.Appartement!.BailleurId)
+                .Select(g => new
+                {
+                    BailleurId = g.Key,
+                    Nombre = g.Count(),
+                    Repondues = g.Count(r => r.DateReponseHote != null),
+                    DelaiMoyenHeures = g.Where(r => r.DateReponseHote != null).Average(r => (double?)(r.DateReponseHote!.Value - r.DateCreation).TotalHours)
+                })
+                .ToListAsync())
+            .ToDictionary(d => d.BailleurId);
         var annulationsHote = (await _context.Reservations.AsNoTracking()
                 .Where(r => r.AnnuleePar == AuteurAnnulation.Hote && r.DateAnnulation >= depuis && ids.Contains(r.Appartement!.BailleurId))
                 .Select(r => r.Appartement!.BailleurId)
+                .Distinct()
                 .ToListAsync())
             .ToHashSet();
 
         return hotes.ToDictionary(h => h.Id, h =>
         {
-            var notesHote = notes.Where(n => n.CibleId == h.Id).Select(n => (int?)n.Note).ToList();
-            var noteMoyenne = Moyenne(notesHote);
-            var demandesHote = demandes.Where(d => d.BailleurId == h.Id).ToList();
-            var repondues = demandesHote.Where(d => d.DateReponseHote is not null).ToList();
-            decimal? taux = demandesHote.Count == 0 ? null : Math.Round(100m * repondues.Count / demandesHote.Count, 0, MidpointRounding.AwayFromZero);
-            int? delai = repondues.Count == 0 ? null
-                : (int)Math.Round(repondues.Average(d => (d.DateReponseHote!.Value - d.DateCreation).TotalHours), MidpointRounding.AwayFromZero);
-            var moyenneBrute = notesHote.Count == 0 ? (decimal?)null : (decimal)notesHote.Average(n => n!.Value);
-            var superhote = (sejoursTermines.FirstOrDefault(s => s.BailleurId == h.Id)?.Nombre ?? 0) >= SejoursMinSuperhote
-                && moyenneBrute >= NoteMinSuperhote
+            var noteHote = notes.GetValueOrDefault(h.Id);
+            var demandesHote = demandes.GetValueOrDefault(h.Id);
+            decimal? taux = demandesHote is null ? null : Math.Round(100m * demandesHote.Repondues / demandesHote.Nombre, 0, MidpointRounding.AwayFromZero);
+            int? delai = demandesHote?.DelaiMoyenHeures is { } heures ? (int)Math.Round(heures, MidpointRounding.AwayFromZero) : null;
+            var superhote = sejoursTermines.GetValueOrDefault(h.Id) >= SejoursMinSuperhote
+                && noteHote?.Moyenne >= NoteMinSuperhote
                 && (taux is null || taux >= TauxReponseMinSuperhote)
                 && !annulationsHote.Contains(h.Id);
-            var premiereDate = datesAnnonces.Where(d => d.BailleurId == h.Id).Select(d => d.DateCreation)
-                .Append(h.DateCreation).Where(d => d is not null).Min();
+            var premiereDate = new[] { premieresAnnonces.GetValueOrDefault(h.Id), h.DateCreation }.Where(d => d is not null).Min();
 
             return new HoteDto
             {
@@ -411,8 +474,8 @@ public class AvisServices
                 TauxReponse = taux,
                 DelaiReponseHeures = delai,
                 MembreDepuis = premiereDate?.ToString("yyyy-MM"),
-                NombreAvis = notesHote.Count,
-                NoteMoyenne = noteMoyenne
+                NombreAvis = noteHote?.Nombre ?? 0,
+                NoteMoyenne = Arrondir(noteHote?.Moyenne)
             };
         });
     }

@@ -1,4 +1,4 @@
-import type { AvisDto, MoyennesAvisDto } from "../../types/models";
+import type { AvisDto, ListeAvisDto, MoyennesAvisDto, PagedResultDto } from "../../types/models";
 import { MOIS } from "../sejour/dates";
 
 /** Sous-notes facultatives données par le voyageur au logement. */
@@ -32,3 +32,38 @@ export function libelleDelaiReponse(heures: number | null | undefined) {
   const jours = Math.round(heures / 24);
   return jours <= 1 ? "en un jour environ" : `en ${jours} jours environ`;
 }
+
+/**
+ * Réponse de GET appartement/{id}/avis : moyennes globales (toutes pages) et avis paginés.
+ * Formes acceptées : `avis` en tableau simple (route non paginée ou pagination au premier niveau)
+ * ou `avis` en page { donnees, totalPages… }.
+ */
+export type ReponseAvis = Omit<ListeAvisDto, "avis"> & {
+  avis?: AvisDto[] | PagedResultDto<AvisDto>;
+  donnees?: AvisDto[];
+  pageActuelle?: number;
+  taillePage?: number;
+  totalElements?: number;
+  totalPages?: number;
+};
+
+/** Liste d'avis d'une réponse, paginée ou non (voir ReponseAvis). */
+export function avisDeLaReponse(r: ReponseAvis): PagedResultDto<AvisDto> | AvisDto[] {
+  const liste = r.avis ?? r.donnees ?? [];
+  if (!Array.isArray(liste)) return liste;
+  if (r.totalPages == null) return liste;
+  return {
+    donnees: liste,
+    pageActuelle: r.pageActuelle ?? 1,
+    taillePage: r.taillePage ?? liste.length,
+    totalElements: r.totalElements ?? r.nombre,
+    totalPages: r.totalPages,
+  };
+}
+
+/** Tous les avis d'une réponse (paginée ou non). */
+export const listeAvis = (r: ReponseAvis | null | undefined): AvisDto[] => {
+  if (!r) return [];
+  const liste = avisDeLaReponse(r);
+  return Array.isArray(liste) ? liste : liste.donnees;
+};

@@ -1,7 +1,6 @@
 namespace ImmoPlus.Api.Services;
 
 using System.Globalization;
-using System.Text;
 using Microsoft.EntityFrameworkCore;
 using ImmoPlus.Api.Data;
 using ImmoPlus.Api.Dtos;
@@ -97,11 +96,19 @@ public class AppartementServices
         return (await VersDtosAsync([appartement], appelant: (appartement.BailleurId, RoleUtilisateur.Bailleur)))[0];
     }
 
+    /// <summary>Taille de page maximale quand les 4 bornes de la carte sont fournies (tous les logements de la zone visible).</summary>
+    public const int TailleMaxCarte = 200;
+
+    /// <summary>
+    /// Annonces paginées, les plus récentes d'abord (Id décroissant : tri stable). Tous les filtres sont traduits en SQL,
+    /// y compris la disponibilité sur des dates (aucune réservation active ni date bloquée qui chevauche le séjour).
+    /// </summary>
     /// <param name="utilisateurId">Appelant connecté (facultatif) : ses propres logements sont détaillés (instructions, position exacte).</param>
-    public async Task<List<AppartementResponseDto>> ListerAsync(TypeOffre? typeOffre = null, bool? disponible = null,
-        RechercheAppartementDto? recherche = null, int? utilisateurId = null, RoleUtilisateur? role = null)
+    public async Task<PagedResultDto<AppartementResponseDto>> ListerAsync(TypeOffre? typeOffre = null, bool? disponible = null,
+        RechercheAppartementDto? recherche = null, int? utilisateurId = null, RoleUtilisateur? role = null, Pagination? pagination = null)
     {
         recherche ??= new RechercheAppartementDto();
+        var page = pagination ?? Pagination.Lire(null, null);
         if (typeOffre == TypeOffre.LongueDuree)
         {
             // Dates, voyageurs et prix par nuit n'ont pas de sens pour la longue durée : ignorés.
@@ -129,13 +136,17 @@ public class AppartementServices
         var equipementsVoulus = NormaliserEquipements(recherche.Equipements);
         var zone = LireZone(recherche);
 
-        var requete = _context.Appartements.AsNoTracking().Include(a => a.Bailleur).Include(a => a.Photos).AsQueryable();
+        var requete = _context.Appartements.AsNoTracking().AsQueryable();
 
         if (role != RoleUtilisateur.Admin)
         {
             // Même règle que la fiche : le public ne voit ni les annonces supprimées ni celles d'un hôte désactivé.
             requete = requete.Where(a => (utilisateurId != null && a.BailleurId == utilisateurId)
                 || (!a.EstDesactive && a.Bailleur!.Statut != StatutUtilisateur.Desactive));
+        }
+        if (recherche.Supprimes is { } supprimes)
+        {
+            requete = requete.Where(a => a.EstDesactive == supprimes);
         }
         if (recherche.BailleurId is not null)
         {
@@ -182,53 +193,70 @@ public class AppartementServices
                 : requete.Where(a => a.Longitude >= z.Ouest || a.Longitude <= z.Est);
         }
 
-        var appartements = await requete.ToListAsync();
-
-        // Texte et équipements filtrés en mémoire : comparaison sans accents ni casse, impossible à traduire en SQL avec SQLite.
+        // Ville et quartier : sans accents ni casse (« kipe » trouve « Kipé »), en SQL ; index trigrammes sur
+        // immoplus_sans_accents("Ville") / ("Quartier") (migration IndexEtPerformances).
         if (!string.IsNullOrWhiteSpace(recherche.Ville))
         {
-            var ville = Simplifier(recherche.Ville);
-            appartements = appartements.Where(a => a.Ville is not null && Simplifier(a.Ville).Contains(ville)).ToList();
+            var ville = RechercheTexte.Contient(recherche.Ville);
+            requete = requete.Where(a => a.Ville != null && EF.Functions.ILike(AppDbContext.SansAccents(a.Ville), AppDbContext.SansAccents(ville)));
         }
         if (!string.IsNullOrWhiteSpace(recherche.Quartier))
         {
-            var quartier = Simplifier(recherche.Quartier);
-            appartements = appartements.Where(a => a.Quartier is not null && Simplifier(a.Quartier).Contains(quartier)).ToList();
+            var quartier = RechercheTexte.Contient(recherche.Quartier);
+            requete = requete.Where(a => a.Quartier != null && EF.Functions.ILike(AppDbContext.SansAccents(a.Quartier), AppDbContext.SansAccents(quartier)));
         }
-        if (equipementsVoulus.Count > 0)
+        if (!string.IsNullOrWhiteSpace(recherche.Q))
         {
-            appartements = appartements.Where(a => equipementsVoulus.All(LireEquipements(a.Equipements).Contains)).ToList();
+            var numero = RechercheTexte.Reference(recherche.Q);
+            var motif = RechercheTexte.Contient(recherche.Q);
+            requete = requete.Where(a => a.Id == numero
+                || EF.Functions.ILike(AppDbContext.SansAccents(a.Adresse), AppDbContext.SansAccents(motif))
+                || (a.Ville != null && EF.Functions.ILike(AppDbContext.SansAccents(a.Ville), AppDbContext.SansAccents(motif)))
+                || (a.Quartier != null && EF.Functions.ILike(AppDbContext.SansAccents(a.Quartier), AppDbContext.SansAccents(motif)))
+                || EF.Functions.ILike(AppDbContext.SansAccents(a.Bailleur!.Nom), AppDbContext.SansAccents(motif)));
+        }
+        // Équipements stockés « wifi,clim,… » (clés normalisées) : chaque clé voulue doit figurer entre deux virgules.
+        foreach (var equipement in equipementsVoulus)
+        {
+            var cle = "," + equipement + ",";
+            requete = requete.Where(a => a.Equipements != null && ("," + a.Equipements + ",").Contains(cle));
         }
 
         if (recherche.Arrivee is not null)
         {
-            // Les réservations impayées depuis 24 h ne doivent plus masquer un logement libre.
-            await _reservationServices.ExpirerImpayeesAsync();
             var arrivee = recherche.Arrivee.Value.Date;
             var depart = recherche.Depart!.Value.Date;
             var nuits = (depart - arrivee).Days;
-            var candidats = appartements.Select(a => a.Id).ToList();
-            var occupes = (await _context.Reservations
-                    .Where(r => candidats.Contains(r.AppartementId)
-                        && r.Statut != StatutReservation.Annulee && r.Statut != StatutReservation.Refusee
-                        && arrivee < r.DateDepart && r.DateArrivee < depart)
-                    .Select(r => r.AppartementId)
-                    .ToListAsync())
-                .Concat(await _context.Indisponibilites
-                    .Where(i => candidats.Contains(i.AppartementId) && arrivee < i.DateFin && i.DateDebut < depart)
-                    .Select(i => i.AppartementId)
-                    .ToListAsync())
-                .ToHashSet();
-            appartements = appartements.Where(a => !occupes.Contains(a.Id) && nuits >= (a.NuitsMin ?? 1)).ToList();
+            // Les réservations impayées depuis 24 h ne masquent plus un logement libre : exclues ici en SQL, sans attendre que la
+            // maintenance planifiée les annule (plus d'annulation de toute la base pendant une recherche publique).
+            var maintenant = DateTime.UtcNow;
+            var limitePaiement = maintenant - ReservationServices.DelaiPaiement;
+            var limiteTransaction = maintenant - PaiementMobileServices.DureeValidite;
+            // Chevauchement en SQL (NOT EXISTS sur l'index AppartementId + dates) : plus de chargement de toutes les annonces en mémoire.
+            requete = requete.Where(a => (a.NuitsMin ?? 1) <= nuits
+                && !_context.Reservations.Any(r => r.AppartementId == a.Id
+                    && r.Statut != StatutReservation.Annulee && r.Statut != StatutReservation.Refusee
+                    && arrivee < r.DateDepart && r.DateArrivee < depart
+                    // Même règle que ReservationServices.ImpayeesAExpirer.
+                    && !(r.Statut == StatutReservation.EnAttente && (r.DateReponseHote ?? r.DateCreation) <= limitePaiement
+                        && !r.Paiements.Any()
+                        && !r.TransactionsMobiles.Any(t => t.Statut == StatutTransactionMobile.EnAttente && t.DateCreation > limiteTransaction)))
+                && !_context.Indisponibilites.Any(i => i.AppartementId == a.Id && arrivee < i.DateFin && i.DateDebut < depart));
         }
 
+        var (lignes, total) = await requete
+            .OrderByDescending(a => a.Id)
+            .Select(a => new LigneAnnonce { Appartement = a, BailleurNom = a.Bailleur!.Nom, BailleurStatut = a.Bailleur.Statut })
+            .PageAsync(page);
+        var appartements = await CompleterAnnoncesAsync(lignes, (utilisateurId, role));
+
         var ids = appartements.Select(a => a.Id).ToList();
-        var loues = (await _context.Locations
+        var loues = ids.Count == 0 ? new HashSet<int>() : (await _context.Locations
             .Where(l => ids.Contains(l.AppartementId) && l.Statut == StatutLocation.EnCours)
             .Select(l => l.AppartementId)
             .ToListAsync()).ToHashSet();
 
-        return await VersDtosAsync(appartements, loues, (utilisateurId, role));
+        return PagedResultDto<AppartementResponseDto>.Creer(await VersDtosAsync(appartements, loues, (utilisateurId, role)), page, total);
     }
 
     /// <summary>
@@ -256,16 +284,67 @@ public class AppartementServices
     /// <summary>Logements donnés, dans l'ordre des ids (favoris), au même format que la liste, disponibles ou non.</summary>
     public async Task<List<AppartementResponseDto>> ListerParIdsAsync(List<int> ids, int utilisateurId, RoleUtilisateur role)
     {
-        var appartements = await _context.Appartements.AsNoTracking()
-            .Include(a => a.Bailleur).Include(a => a.Photos)
+        var appartements = await CompleterAnnoncesAsync(await _context.Appartements.AsNoTracking()
             .Where(a => ids.Contains(a.Id))
-            .ToListAsync();
+            .Select(a => new LigneAnnonce { Appartement = a, BailleurNom = a.Bailleur!.Nom, BailleurStatut = a.Bailleur.Statut })
+            .ToListAsync(), (utilisateurId, role));
         var loues = (await _context.Locations
             .Where(l => ids.Contains(l.AppartementId) && l.Statut == StatutLocation.EnCours)
             .Select(l => l.AppartementId)
             .ToListAsync()).ToHashSet();
         var ordre = ids.Select((id, i) => (id, i)).ToDictionary(x => x.id, x => x.i);
         return await VersDtosAsync(appartements.OrderBy(a => ordre[a.Id]).ToList(), loues, (utilisateurId, role));
+    }
+
+    /// <summary>Annonce d'une liste et les seuls champs utiles de son hôte (ni email, ni téléphone, ni hash du mot de passe).</summary>
+    private sealed class LigneAnnonce
+    {
+        public Appartement Appartement { get; init; } = null!;
+        public string BailleurNom { get; init; } = "";
+        public StatutUtilisateur BailleurStatut { get; init; }
+    }
+
+    /// <summary>
+    /// Hôte réduit (nom, statut) et photos des annonces d'une liste. Public : la couverture (première photo classique) et le
+    /// premier panorama 360° s'il y en a un (badge « 360° » des cartes), lus en une requête DISTINCT ON ; propriétaire et admin
+    /// (gestion de leurs annonces, formulaire de modification) : toutes les photos.
+    /// </summary>
+    private async Task<List<Appartement>> CompleterAnnoncesAsync(List<LigneAnnonce> lignes, (int? Id, RoleUtilisateur? Role) appelant)
+    {
+        var appartements = lignes.Select(l =>
+        {
+            l.Appartement.Bailleur = new Utilisateur { Id = l.Appartement.BailleurId, Nom = l.BailleurNom, Statut = l.BailleurStatut };
+            return l.Appartement;
+        }).ToList();
+        bool Detaille(Appartement a) => appelant.Role == RoleUtilisateur.Admin
+            || (appelant.Role == RoleUtilisateur.Bailleur && a.BailleurId == appelant.Id);
+        var completes = appartements.Where(Detaille).Select(a => a.Id).ToArray();
+        var couvertures = appartements.Where(a => !Detaille(a)).Select(a => a.Id).ToArray();
+        var photos = new List<PhotoAppartement>();
+        if (completes.Length > 0)
+        {
+            photos.AddRange(await _context.PhotosAppartement.AsNoTracking()
+                .Where(p => completes.Contains(p.AppartementId))
+                .Select(p => new PhotoAppartement { Id = p.Id, AppartementId = p.AppartementId, Ordre = p.Ordre, Est360 = p.Est360, Libelle = p.Libelle })
+                .ToListAsync());
+        }
+        if (couvertures.Length > 0)
+        {
+            photos.AddRange(await _context.PhotosAppartement
+                .FromSql($"""
+                    SELECT DISTINCT ON ("AppartementId", "Est360") * FROM "PhotosAppartement"
+                    WHERE "AppartementId" = ANY({couvertures}) ORDER BY "AppartementId", "Est360", "Ordre", "Id"
+                    """)
+                .AsNoTracking()
+                .Select(p => new PhotoAppartement { Id = p.Id, AppartementId = p.AppartementId, Ordre = p.Ordre, Est360 = p.Est360, Libelle = p.Libelle })
+                .ToListAsync());
+        }
+        var parAnnonce = photos.ToLookup(p => p.AppartementId);
+        foreach (var a in appartements)
+        {
+            a.Photos = parAnnonce[a.Id].ToList();
+        }
+        return appartements;
     }
 
     private readonly record struct Zone(double Nord, double Sud, double Est, double Ouest);
@@ -298,7 +377,9 @@ public class AppartementServices
         var lieux = await _context.Appartements.AsNoTracking()
             .Where(a => a.Disponible && !a.EstDesactive && a.Bailleur!.Statut != StatutUtilisateur.Desactive && a.Ville != null && a.Ville != "")
             .Where(a => typeOffre == null || a.TypeOffre == typeOffre)
+            // Couples distincts en SQL (quelques centaines) plutôt que toutes les annonces.
             .Select(a => new { a.Ville, a.Quartier })
+            .Distinct()
             .ToListAsync();
 
         return lieux
@@ -576,7 +657,8 @@ public class AppartementServices
     {
         var ids = appartements.Select(a => a.Id).ToList();
         var notes = await _avisServices.NotesAppartementsAsync(ids);
-        var hotes = await _avisServices.StatistiquesHotesAsync(appartements.Select(a => a.BailleurId));
+        // Badges des hôtes en cache court (2 min, partagé avec Redis), pour les listes comme pour la fiche : ~6 agrégats évités par affichage.
+        var hotes = await _avisServices.StatistiquesHotesAsync(appartements.Select(a => a.BailleurId), depuisCache: true);
         bool Detaille(Appartement a) => appelant.Role == RoleUtilisateur.Admin
             || (appelant.Role == RoleUtilisateur.Bailleur && a.BailleurId == appelant.Id);
         var idsDetailles = appartements.Where(Detaille).Select(a => a.Id).ToList();
@@ -834,7 +916,7 @@ public class AppartementServices
 
     private static string? Nettoyer(string? valeur) => string.IsNullOrWhiteSpace(valeur) ? null : valeur.Trim();
 
-    /// <summary>Adresse obligatoire ; longueurs bornées (la base SQLite n'impose aucune limite).</summary>
+    /// <summary>Adresse obligatoire ; longueurs bornées (colonnes « text » sans limite en base).</summary>
     private static void VerifierTextes(string? adresse, string? description)
     {
         if (string.IsNullOrWhiteSpace(adresse))
@@ -849,12 +931,5 @@ public class AppartementServices
         {
             throw new InvalidOperationException($"La description ne doit pas dépasser {LongueurMaxDescription} caractères");
         }
-    }
-
-    /// <summary>Minuscules sans accents : « Kipé » et « kipe » se retrouvent.</summary>
-    private static string Simplifier(string valeur)
-    {
-        var decompose = valeur.Trim().ToLowerInvariant().Normalize(NormalizationForm.FormD);
-        return new string(decompose.Where(c => CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark).ToArray());
     }
 }

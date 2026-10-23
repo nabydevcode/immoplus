@@ -1,3 +1,73 @@
+# Secrets locaux (non versionnés) dans infra/*.env : les créer avec ./infra/initialiser-secrets.sh
+# (infra/postgres.env : voir infra/postgres.env.exemple). Profil « echelle » (2 API Release + nginx) : voir README.
+
+# Réglages communs des 2 instances « production » du profil echelle (image Release, sans dotnet watch ni volumes bin/obj).
+x-api-echelle: &api-echelle
+  profiles: ["echelle"]
+  build:
+    context: ./api/ImmoPlus.Api
+    dockerfile: Dockerfile.production
+  image: immoplus-api-production
+  # Redis toujours actif dans ce profil : chaîne construite à partir de REDIS_PASSWORD (infra/redis.env), jamais écrite en clair ici.
+  entrypoint:
+    - /bin/sh
+    - -c
+    - export Redis__Connexion="redis:6379,password=$${REDIS_PASSWORD},abortConnect=false"; exec dotnet ImmoPlus.Api.dll
+  env_file:
+    - path: ./infra/postgres.env # ConnectionStrings__Default (même base que l'API de développement)
+      required: true
+    - path: ./infra/stockage.env # Stockage__S3__* (clé applicative)
+      required: true
+    - path: ./infra/redis.env # REDIS_PASSWORD
+      required: true
+    - path: ./infra/echelle.env # Jwt__Cle partagée par les 2 instances
+      required: true
+    - path: ./infra/metriques.env # Metriques__Jeton : /metriques exige « Authorization: Bearer » (lu aussi par prometheus)
+      required: false
+  # Pas de sms.env ici : aucun vrai SMS depuis ce profil d'essai.
+  # Prête = PostgreSQL, Redis et S3 joignables (GET /sante/pret → 200). L'image aspnet n'a ni curl ni wget : requête HTTP
+  # écrite à la main avec bash (/dev/tcp). nginx-echelle attend que les 2 instances soient prêtes.
+  healthcheck:
+    test:
+      - CMD
+      - bash
+      - -c
+      - >-
+        exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /sante/pret HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && head -n1 <&3 | grep -q ' 200 '
+    interval: 15s
+    timeout: 5s
+    retries: 3
+    start_period: 60s
+    start_interval: 2s
+  environment:
+    - Stockage__Mode=S3
+    - Smtp__Host=mailhog
+    - Smtp__Port=1025
+    - Smtp__Expediteur=no-reply@immoplus.local
+    - Frontend__Url=http://localhost:${ECHELLE_PORT_HOTE:-8088}
+    - Cors__OriginesAutorisees__0=http://localhost:${ECHELLE_PORT_HOTE:-8088}
+    - Sms__Mode=Simulation
+    - PaiementMobile__Mode=Desactive
+    # Rappels planifiés coupés par défaut (même base que l'API de dev) ; pour tester le verrou « un seul exécutant » :
+    # ECHELLE_RAPPELS_ACTIFS=true docker compose --profile echelle up -d api-echelle-1 api-echelle-2
+    - Rappels__Actif=${ECHELLE_RAPPELS_ACTIFS:-false}
+    # nginx-echelle est dans un autre conteneur : on croit son X-Forwarded-For (réseaux Docker) pour voir l'IP réelle du client.
+    - ProxysDeConfiance__Reseaux__0=172.16.0.0/12
+  expose:
+    - "8080" # joignable seulement par nginx-echelle (aucun port publié)
+  volumes:
+    # Liste des pg_dump pour la page admin « Sauvegardes » (lecture seule).
+    - ./api/ImmoPlus.Api/Sauvegardes/postgres:/app/Sauvegardes/postgres:ro
+  depends_on:
+    postgres:
+      condition: service_healthy
+    garage-init:
+      condition: service_completed_successfully
+    redis:
+      condition: service_healthy
+    mailhog:
+      condition: service_started
+
 services:
   api:
     build:
@@ -6,16 +76,181 @@ services:
       - "5107:5107"
     environment:
       - Smtp__Host=mailhog
-    # Réglages privés facultatifs (passerelle SMS Android…) : copier sms.env.exemple en sms.env (non versionné).
+      # Pool Npgsql de l'API de dev plafonné à 10 connexions (défaut de l'API : 40). PostgreSQL local : max_connections=150
+      # partagé avec le profil echelle (2 × 40) + sauvegardes + psql. Règle : somme des pools + marge ≤ max_connections.
+      - BaseDeDonnees__TaillePoolMax=10
     env_file:
+      # Chaîne de connexion PostgreSQL (ConnectionStrings__Default) : copier infra/postgres.env.exemple
+      # en infra/postgres.env (non versionné) et y mettre le mot de passe.
+      - path: ./infra/postgres.env
+        required: true
+      # Stockage des fichiers (Stockage__Mode=Disque par défaut ; S3 = bucket Garage) et clé S3 de l'API.
+      - path: ./infra/stockage.env
+        required: true
+      # Redis (Redis__Connexion vide = désactivé, une seule instance comme avant).
+      - path: ./infra/redis.env
+        required: true
+      # Réglages privés facultatifs (passerelle SMS Android…) : copier sms.env.exemple en sms.env (non versionné).
       - path: ./api/ImmoPlus.Api/sms.env
         required: false
     volumes:
       - ./api/ImmoPlus.Api:/src
       - api-bin:/src/bin
       - api-obj:/src/obj
+    # « healthy » quand /sante/pret répond 200 (PostgreSQL, Redis, S3) ; dotnet watch compile au démarrage : délai large.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:5107/sante/pret"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 180s
+      start_interval: 5s
     depends_on:
-      - mailhog
+      postgres:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+      garage-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  # Base de données (psql : docker compose exec postgres psql -U immoplus immoplus).
+  # Données dans le volume nommé postgres-data (conservé par « docker compose down », supprimé par « down -v » !).
+  postgres:
+    image: postgres:17-alpine
+    # 150 connexions au lieu de 100 : API de dev (pool 10) + 2 instances echelle (pool 40 chacune) + sauvegardes, psql, marge.
+    command: ["postgres", "-c", "max_connections=150"]
+    environment:
+      - POSTGRES_DB=immoplus
+      - POSTGRES_USER=immoplus
+    env_file:
+      - path: ./infra/postgres.env # POSTGRES_PASSWORD (pris en compte seulement à la création du volume)
+        required: true
+    ports:
+      # Accès depuis les outils du Mac uniquement (pas depuis le réseau). 5433 côté Mac car un PostgreSQL
+      # local occupe souvent déjà 5432 ; dans les conteneurs, le port reste 5432 (Host=postgres;Port=5432).
+      - "127.0.0.1:${POSTGRES_PORT_HOTE:-5433}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U immoplus -d immoplus"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # Sauvegarde quotidienne pg_dump -Fc vers api/ImmoPlus.Api/Sauvegardes/postgres/ (non versionné, 14 jours),
+  # visible par l'API dans /src/Sauvegardes/postgres. Restauration : infra/restaurer-postgres.sh.
+  sauvegarde-db:
+    image: postgres:17-alpine
+    entrypoint: ["/bin/sh", "/infra/sauvegarde-postgres.sh"]
+    environment:
+      - PGHOST=postgres
+      - PGUSER=immoplus
+      - PGDATABASE=immoplus
+      - DOSSIER_SAUVEGARDES=/sauvegardes
+      - CONSERVER_JOURS=14
+      - INTERVALLE_SECONDES=86400
+    env_file:
+      - path: ./infra/postgres.env
+        required: true
+    volumes:
+      - ./infra/sauvegarde-postgres.sh:/infra/sauvegarde-postgres.sh:ro
+      - ./api/ImmoPlus.Api/Sauvegardes/postgres:/sauvegardes
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Stockage objet compatible S3 (Garage, https://garagehq.deuxfleurs.fr — remplace MinIO, dont les images Docker
+  # officielles ne sont plus publiées). Bucket privé « immoplus » créé par garage-init. Données dans le volume garage-data.
+  # API S3 : http://garage:9000 dans Docker, http://localhost:9000 depuis le Mac (127.0.0.1 uniquement).
+  garage:
+    image: dxflrs/garage:v2.4.1
+    env_file:
+      - path: ./infra/garage.env # GARAGE_RPC_SECRET, GARAGE_ADMIN_TOKEN, GARAGE_METRICS_TOKEN
+        required: true
+    volumes:
+      - ./infra/garage/garage.toml:/etc/garage.toml:ro
+      - garage-data:/var/lib/garage
+    ports:
+      - "127.0.0.1:${S3_PORT_HOTE:-9000}:9000"
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+      start_interval: 2s
+
+  # Initialisation idempotente (rôle du nœud, bucket privé, clé API lecture/écriture, clé sauvegarde lecture seule),
+  # puis s'arrête. Relancer : docker compose up garage-init
+  garage-init:
+    build:
+      context: ./infra/garage
+      dockerfile_inline: |
+        FROM alpine:3.22
+        RUN apk add --no-cache curl jq
+    image: immoplus-garage-init
+    entrypoint: ["/bin/sh", "/infra/init-garage.sh"]
+    environment:
+      - GARAGE_ADMIN_URL=http://garage:3903
+    env_file:
+      - path: ./infra/garage.env
+        required: true
+      - path: ./infra/stockage.env
+        required: true
+    volumes:
+      - ./infra/garage/init-garage.sh:/infra/init-garage.sh:ro
+    depends_on:
+      garage:
+        condition: service_healthy
+
+  # Copie quotidienne du bucket vers api/ImmoPlus.Api/Sauvegardes/fichiers/ (non versionné) : miroir courant/ +
+  # anciennes versions des fichiers modifiés/supprimés dans versions/ (14 jours). Clé en LECTURE SEULE.
+  sauvegarde-fichiers:
+    image: rclone/rclone:1.75.2
+    entrypoint: ["/bin/sh", "/infra/sauvegarde-fichiers.sh"]
+    environment:
+      - S3_URL=http://garage:9000
+      - S3_REGION=us-east-1
+      - DOSSIER_SAUVEGARDES=/sauvegardes
+      - CONSERVER_JOURS=14
+      - INTERVALLE_SECONDES=86400
+    env_file:
+      - path: ./infra/garage.env # S3_BUCKET, SAUVEGARDE_S3_CLE_ACCES / _SECRETE
+        required: true
+    volumes:
+      - ./infra/sauvegarde-fichiers.sh:/infra/sauvegarde-fichiers.sh:ro
+      - ./api/ImmoPlus.Api/Sauvegardes/fichiers:/sauvegardes
+    depends_on:
+      garage-init:
+        condition: service_completed_successfully
+
+  # Redis : backplane SignalR, compteurs de tentatives, cache, verrous (utilisé seulement si Redis__Connexion est renseigné).
+  # Persistance AOF dans le volume redis-data. Depuis le Mac : localhost:6379 (127.0.0.1 uniquement, mot de passe obligatoire).
+  redis:
+    image: redis:8.8-alpine
+    user: redis
+    # Mot de passe écrit dans un fichier de configuration temporaire (pas dans la ligne de commande visible par ps).
+    command:
+      - /bin/sh
+      - -c
+      - umask 077; printf 'requirepass %s\n' "$${REDIS_PASSWORD:?REDIS_PASSWORD manquant (infra/redis.env)}" > /tmp/redis.conf; exec redis-server /tmp/redis.conf --appendonly yes --dir /data
+    env_file:
+      - path: ./infra/redis.env
+        required: true
+    ports:
+      - "127.0.0.1:${REDIS_PORT_HOTE:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+      start_interval: 1s
 
   # Faux serveur SMTP pour le dev : capture les emails sans les envoyer (interface sur http://localhost:8025).
   mailhog:
@@ -38,7 +273,92 @@ services:
     depends_on:
       - api
 
+  # --- Profil « echelle » : 2 instances Release de l'API + nginx répartiteur (http://localhost:8088) ---
+  # Démarrer sans toucher à l'API de dev : docker compose --profile echelle up -d --build api-echelle-1 api-echelle-2 nginx-echelle
+  api-echelle-1: *api-echelle
+  api-echelle-2: *api-echelle
+
+  nginx-echelle:
+    profiles: ["echelle"]
+    build:
+      context: ./web/immoplus-web-react
+      dockerfile: ../../infra/echelle/Dockerfile.nginx
+    image: immoplus-nginx-echelle
+    ports:
+      - "127.0.0.1:${ECHELLE_PORT_HOTE:-8088}:80"
+    volumes:
+      - ./infra/echelle/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      api-echelle-1:
+        condition: service_healthy
+      api-echelle-2:
+        condition: service_healthy
+
+  # --- Profil « supervision » : Prometheus (http://localhost:9090) + Grafana (http://localhost:3000), 127.0.0.1 uniquement ---
+  # docker compose --profile supervision up -d      (secrets : infra/metriques.env et infra/grafana.env, ./infra/initialiser-secrets.sh)
+  # Collecte /metriques des instances du profil echelle (avec jeton) et de l'API de dev ; tableau de bord « ImmoPlus — API ».
+  prometheus:
+    profiles: ["supervision"]
+    image: prom/prometheus:v3.15.1
+    # Le jeton est copié dans un fichier temporaire du conteneur (credentials_file), jamais dans prometheus.yml.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        umask 077; printf '%s' "$${Metriques__Jeton:?Metriques__Jeton manquant (infra/metriques.env)}" > /tmp/jeton-metriques;
+        exec /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus
+        --storage.tsdb.retention.time=15d --storage.tsdb.retention.size=2GB --web.enable-lifecycle
+    env_file:
+      - path: ./infra/metriques.env
+        required: true
+    volumes:
+      - ./infra/supervision/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT_HOTE:-9090}:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9090/-/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  grafana:
+    profiles: ["supervision"]
+    image: grafana/grafana:13.2.4
+    env_file:
+      - path: ./infra/grafana.env # GF_SECURITY_ADMIN_USER / GF_SECURITY_ADMIN_PASSWORD
+        required: true
+    environment:
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
+      - GF_NEWS_NEWS_FEED_ENABLED=false
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/tableaux/immoplus-api.json
+    volumes:
+      - ./infra/supervision/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/supervision/grafana/tableaux:/var/lib/grafana/tableaux:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT_HOTE:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
 volumes:
+  postgres-data:
   api-bin:
   api-obj:
   web-node-modules:
+  garage-data:
+  redis-data:
+  prometheus-data:
+  grafana-data:

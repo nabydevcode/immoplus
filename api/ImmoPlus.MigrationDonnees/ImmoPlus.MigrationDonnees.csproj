@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Outil ponctuel : copie des données réelles SQLite (copie cohérente de immoplus.db) vers PostgreSQL, avec contrôles. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- SQLite n'est plus utilisé que par cet outil (lecture de l'ancienne base). -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Même modèle EF (AppDbContext) que l'API : lecture de la source et écriture de la cible avec les mêmes entités. -->
+    <ProjectReference Include="../ImmoPlus.Api/ImmoPlus.Api.csproj" />
+  </ItemGroup>
+
+</Project>

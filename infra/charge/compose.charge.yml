@@ -1,0 +1,66 @@
+# Surcharge « tests de charge » du profil echelle : les 2 instances Release travaillent sur la base JETABLE immoplus_charge,
+# le bucket JETABLE immoplus-charge et un Redis à part (redis-charge, sans persistance), jamais sur les données réelles.
+# Utilisée uniquement avec -f (voir infra/charge/lancer-charge.sh et le README, section « Tests de charge ») :
+#   docker compose -f docker-compose.yml -f infra/charge/compose.charge.yml --profile echelle up -d api-echelle-1 api-echelle-2 nginx-echelle
+# Sans ce fichier, le profil echelle reste branché sur la base de développement, comme avant.
+# Variables facultatives : CHARGE_POOL_MAX (40), CHARGE_NPGSQL_OPTIONS (vide), CHARGE_NIVEAU_JOURNAL_REQUETES (Information), CHARGE_SEUIL_SQL_LENT_MS (200),
+# CHARGE_MAINTENANCE_ACTIVE (false).
+
+x-api-charge: &api-charge
+  # Chaîne de connexion dérivée de celle d'infra/postgres.env (mot de passe jamais écrit ici) : Database=immoplus devient
+  # Database=immoplus_charge. Garde-fou : l'instance refuse de démarrer si la base obtenue n'est pas immoplus_charge.
+  entrypoint:
+    - /bin/sh
+    - -c
+    - |
+      cs=$$(printf '%s' "$$ConnectionStrings__Default" | sed -E 's/Database=immoplus(;|$$)/Database=immoplus_charge\1/')
+      case "$$cs" in
+        *Database=immoplus_charge\;*|*Database=immoplus_charge) ;;
+        *) echo "Refus : la base de charge immoplus_charge n'a pas pu être sélectionnée" >&2; exit 1 ;;
+      esac
+      if [ "$$Stockage__S3__Bucket" != "immoplus-charge" ]; then echo "Refus : bucket de charge attendu" >&2; exit 1; fi
+      # Pool Npgsql plafonné (sans réglage, Npgsql ouvrirait 100 connexions PAR instance) : 2 × CHARGE_POOL_MAX + API de dev
+      # (10) + sauvegardes + psql doit rester sous max_connections=150 (PostgreSQL local). CHARGE_POOL_MAX=100 = Npgsql d'origine.
+      # CHARGE_NPGSQL_OPTIONS : réglages Npgsql en plus, ex. « Max Auto Prepare=100;Auto Prepare Min Usages=2 » (requêtes préparées).
+      export ConnectionStrings__Default="$$cs;Maximum Pool Size=${CHARGE_POOL_MAX:-40}${CHARGE_NPGSQL_OPTIONS:+;${CHARGE_NPGSQL_OPTIONS}}"
+      export Redis__Connexion="redis-charge:6379,password=$${REDIS_PASSWORD},abortConnect=false"
+      exec dotnet ImmoPlus.Api.dll
+  environment:
+    - Stockage__S3__Bucket=immoplus-charge
+    - Rappels__Actif=false
+    # Maintenance planifiée (expirations, fins de séjour, loyers ; par lots toutes les 2 min) coupée par défaut pour mesurer
+    # les lectures seules. CHARGE_MAINTENANCE_ACTIVE=true pour vérifier qu'elle ne pénalise pas la charge (premier passage
+    # sur immoplus_charge : quelques centaines d'emails vers MailHog, @test-charge.local uniquement → purger-mailhog.sh).
+    - Maintenance__Actif=${CHARGE_MAINTENANCE_ACTIVE:-false}
+    # Une ligne de journal par requête, comme en production (CHARGE_NIVEAU_JOURNAL_REQUETES=Warning pour la couper).
+    - Logging__LogLevel__ImmoPlus.Api.Services.MiddlewareCorrelation=${CHARGE_NIVEAU_JOURNAL_REQUETES:-Information}
+    - Journaux__SeuilRequeteLenteMs=${CHARGE_SEUIL_SQL_LENT_MS:-200}
+  depends_on:
+    redis-charge:
+      condition: service_healthy
+
+services:
+  api-echelle-1: *api-charge
+  api-echelle-2: *api-charge
+
+  # Redis réservé aux tests de charge : le cache de sortie, le backplane SignalR et les compteurs de l'API utilisent des
+  # préfixes fixes ; partager le Redis de dev mélangerait les listes en cache et enverrait des messages temps réel de la
+  # base de charge à des utilisateurs réels portant le même n°.
+  redis-charge:
+    profiles: ["echelle"]
+    image: redis:8.8-alpine
+    user: redis
+    command:
+      - /bin/sh
+      - -c
+      - umask 077; printf 'requirepass %s\nsave ""\nappendonly no\n' "$${REDIS_PASSWORD:?REDIS_PASSWORD manquant (infra/redis.env)}" > /tmp/redis.conf; exec redis-server /tmp/redis.conf
+    env_file:
+      - path: ./infra/redis.env
+        required: true
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+      start_interval: 1s

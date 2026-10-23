@@ -13,17 +13,15 @@ public class DocumentServices
     private static readonly string[] ExtensionsAutorisees = [".pdf", ".jpg", ".jpeg", ".png"];
 
     private readonly AppDbContext _context;
-    private readonly IWebHostEnvironment _environnement;
+    private readonly IStockageFichiers _stockage;
     private readonly NotificationServices _notificationServices;
 
-    public DocumentServices(AppDbContext context, IWebHostEnvironment environnement, NotificationServices notificationServices)
+    public DocumentServices(AppDbContext context, IStockageFichiers stockage, NotificationServices notificationServices)
     {
         _context = context;
-        _environnement = environnement;
+        _stockage = stockage;
         _notificationServices = notificationServices;
     }
-
-    private string DossierRacine => Path.Combine(_environnement.ContentRootPath, "Storage", "documents");
 
     public async Task<DocumentResponseDto> UploaderAsync(
         int candidatureId, int utilisateurId, RoleUtilisateur role,
@@ -64,15 +62,13 @@ public class DocumentServices
             throw new InvalidOperationException("Type de fichier non autorisé. Formats acceptés : PDF, JPG, PNG");
         }
 
-        var dossierCandidature = Path.Combine(DossierRacine, candidatureId.ToString());
-        Directory.CreateDirectory(dossierCandidature);
-
+        // Clé « documents/{candidatureId}/{guid}.ext » (CheminStockage relatif à « documents/ », comme avant).
         var nomStocke = $"{Guid.NewGuid()}{extension}";
-        var cheminComplet = Path.Combine(dossierCandidature, nomStocke);
-
-        await using (var flux = new FileStream(cheminComplet, FileMode.Create))
+        var cheminStockage = $"{candidatureId}/{nomStocke}";
+        await using (var flux = fichier.OpenReadStream())
         {
-            await fichier.CopyToAsync(flux);
+            await _stockage.EnregistrerAsync(ClesStockage.Cle(ClesStockage.Documents, cheminStockage), flux,
+                extension == ".pdf" ? "application/pdf" : extension == ".png" ? "image/png" : "image/jpeg");
         }
 
         var document = new Document
@@ -81,7 +77,7 @@ public class DocumentServices
             Proprietaire = proprietaireEnum,
             TypeDocument = typeEnum,
             NomFichierOriginal = fichier.FileName,
-            CheminStockage = Path.Combine(candidatureId.ToString(), nomStocke),
+            CheminStockage = cheminStockage,
             TailleOctets = fichier.Length,
             DateUpload = DateTime.UtcNow
         };
@@ -131,13 +127,8 @@ public class DocumentServices
         }
         VerifierAutorisationLecture(document.Candidature!, utilisateurId, role);
 
-        var cheminComplet = Path.Combine(DossierRacine, document.CheminStockage);
-        if (!File.Exists(cheminComplet))
-        {
-            throw new NotFoundException("Le fichier associé est introuvable sur le serveur");
-        }
-
-        Stream flux = new FileStream(cheminComplet, FileMode.Open, FileAccess.Read);
+        var flux = await _stockage.OuvrirAsync(ClesStockage.Cle(ClesStockage.Documents, document.CheminStockage))
+            ?? throw new NotFoundException("Le fichier associé est introuvable sur le serveur");
         return (flux, document.NomFichierOriginal);
     }
 

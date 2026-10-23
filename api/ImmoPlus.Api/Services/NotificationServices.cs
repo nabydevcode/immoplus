@@ -2,13 +2,15 @@ namespace ImmoPlus.Api.Services;
 
 using System.Globalization;
 using System.Net;
+using System.Runtime.CompilerServices;
 using System.Text;
 using ImmoPlus.Api.Models;
 using ImmoPlus.Api.Models.Enums;
 
 /// <summary>
 /// Emails envoyés au locataire à chaque étape de son dossier de location longue durée.
-/// Un échec d'envoi est journalisé mais ne fait jamais échouer l'action métier qui l'a déclenché.
+/// Les emails sont mis dans la boîte d'envoi (MessagesSortants) et partent en arrière-plan, avec nouvelles tentatives :
+/// l'action métier n'attend jamais le serveur SMTP, et un échec d'envoi ne la fait jamais échouer.
 /// </summary>
 public class NotificationServices
 {
@@ -18,9 +20,12 @@ public class NotificationServices
     private readonly LiensFrontend _liens;
     private readonly SmsServices _sms;
     private readonly ILogger<NotificationServices> _logger;
+    private readonly BoiteEnvoiServices _boite;
 
-    public NotificationServices(EmailServices emailServices, LiensFrontend liens, SmsServices sms, ILogger<NotificationServices> logger)
+    public NotificationServices(EmailServices emailServices, LiensFrontend liens, SmsServices sms, ILogger<NotificationServices> logger,
+        BoiteEnvoiServices boite)
     {
+        _boite = boite;
         _emailServices = emailServices;
         _liens = liens;
         _sms = sms;
@@ -831,9 +836,11 @@ public class NotificationServices
     private readonly record struct ReferenceEmail(string Libelle, string Complement, int Numero);
 
     /// <param name="dossier">N° du dossier de candidature concerné : affiché dans l'objet et en tête de l'email.</param>
-    private Task<bool> EnvoyerAsync(Utilisateur destinataire, int? dossier, string sujet, string titre, string contenu, string prochaineEtape) =>
+    /// <param name="evenement">Méthode appelante (ex. « DossierAccepteAsync »), conservée comme événement dans la boîte d'envoi.</param>
+    private Task<bool> EnvoyerAsync(Utilisateur destinataire, int? dossier, string sujet, string titre, string contenu, string prochaineEtape,
+        [CallerMemberName] string evenement = "") =>
         EnvoyerAsync(destinataire, dossier is { } n ? new ReferenceEmail("Dossier", "du dossier", n) : null, sujet, titre, contenu, prochaineEtape,
-            dossier is null ? null : PageDossier(destinataire, dossier.Value));
+            dossier is null ? null : PageDossier(destinataire, dossier.Value), evenement);
 
     /// <summary>Page du site qui suit le dossier, selon le destinataire : le lien de l'email y mène directement.</summary>
     private static string PageDossier(Utilisateur destinataire, int dossier) => destinataire.Role switch
@@ -843,10 +850,13 @@ public class NotificationServices
         _ => $"/admin/candidatures?q={dossier:D6}"
     };
 
-    /// <returns>true si l'email est parti (les rappels ne mémorisent que les envois réussis, pour retenter sinon).</returns>
+    /// <returns>
+    /// true si l'email est mis en file (les rappels le mémorisent alors comme traité : la boîte d'envoi se charge des nouvelles
+    /// tentatives, sans double envoi) ; false si SMTP n'est pas configuré ou si la mise en file a échoué.
+    /// </returns>
     /// <param name="chemin">Page du site ouverte par le lien de l'email (accueil par défaut).</param>
     private async Task<bool> EnvoyerAsync(Utilisateur destinataire, ReferenceEmail? reference, string sujet, string titre, string contenu, string prochaineEtape,
-        string? chemin = null)
+        string? chemin = null, [CallerMemberName] string evenement = "")
     {
         if (reference is { } r)
         {
@@ -884,12 +894,14 @@ public class NotificationServices
 
         try
         {
-            await _emailServices.EnvoyerAsync(destinataire.Email, sujet, html);
+            await _boite.AjouterEmailAsync(destinataire.Email, destinataire.Id, sujet, html,
+                evenement.EndsWith("Async", StringComparison.Ordinal) ? evenement[..^5] : evenement,
+                reference is { } rf ? $"{rf.Libelle} n° {rf.Numero:D6}" : null);
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Échec de l'envoi de l'email « {Sujet} » à {Email}", sujet, destinataire.Email);
+            _logger.LogError(ex, "Impossible de mettre en file l'email « {Sujet} » pour {Email}", sujet, destinataire.Email);
             return false;
         }
     }

@@ -2,7 +2,6 @@ namespace ImmoPlus.Api.Services;
 
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 using ImmoPlus.Api.Data;
 using ImmoPlus.Api.Dtos;
 using ImmoPlus.Api.Models;
@@ -30,7 +29,8 @@ public class FournisseurSmsSimule : IFournisseurSms
 /// « Desactive » (rien n'est envoyé ni enregistré), « Simulation » (tracé avec le statut Simule, rien ne part) ou
 /// « PasserelleAndroid » (vrais SMS). Les vrais envois sont limités aux numéros de Sms:NumerosAutorises, sauf si
 /// Sms:EnvoyerATous=true : les autres destinataires sont tracés en Simule, pour ne jamais écrire par erreur à des inconnus.
-/// Un numéro invalide ou une erreur du fournisseur donne une trace en Echec, sans jamais bloquer l'action métier.
+/// Les SMS passent par la boîte d'envoi (MessagesSortants) : l'action métier n'attend jamais le fournisseur, et une erreur
+/// du fournisseur est réessayée (trace en Echec seulement à l'abandon). Un numéro invalide donne une trace en Echec.
 /// </summary>
 public partial class SmsServices
 {
@@ -40,9 +40,12 @@ public partial class SmsServices
     private readonly IFournisseurSms _fournisseur;
     private readonly IConfiguration _configuration;
     private readonly ILogger<SmsServices> _logger;
+    private readonly BoiteEnvoiServices _boite;
 
-    public SmsServices(AppDbContext context, IFournisseurSms fournisseur, IConfiguration configuration, ILogger<SmsServices> logger)
+    public SmsServices(AppDbContext context, IFournisseurSms fournisseur, IConfiguration configuration, ILogger<SmsServices> logger,
+        BoiteEnvoiServices boite)
     {
+        _boite = boite;
         _context = context;
         _fournisseur = fournisseur;
         _configuration = configuration;
@@ -58,7 +61,10 @@ public partial class SmsServices
     /// <summary>Adresse du site sans « https:// », pour un lien court dans le SMS (toujours Frontend:Url).</summary>
     public string Site => Regex.Replace((_configuration["Frontend:Url"] ?? "http://localhost:5173").TrimEnd('/'), "^https?://", "");
 
-    /// <summary>Envoie (ou simule) un SMS ; ne lève jamais d'exception.</summary>
+    /// <summary>
+    /// Met le SMS dans la boîte d'envoi (envoyé en arrière-plan, voir EnvoiMessagesServices) ; ne lève jamais d'exception.
+    /// Mode et préférence du destinataire vérifiés ici ; numéro, liste de test et fournisseur au moment de l'envoi.
+    /// </summary>
     /// <param name="evenement">Code court de l'événement, ex. « reservation-confirmee ».</param>
     public async Task EnvoyerAsync(Utilisateur destinataire, string evenement, string texte)
     {
@@ -73,70 +79,63 @@ public partial class SmsServices
             {
                 texte = texte[..(LongueurMaxTexte - 1)] + "…";
             }
-            var sms = new NotificationSms
-            {
-                UtilisateurId = destinataire.Id,
-                Canal = Canal,
-                Texte = texte,
-                Evenement = evenement.Length > 50 ? evenement[..50] : evenement,
-                DateEnvoi = DateTime.UtcNow
-            };
-
-            var numero = NormaliserTelephone(destinataire.Telephone);
-            if (numero is null)
-            {
-                sms.Telephone = Tronquer(destinataire.Telephone ?? "", 30);
-                sms.Statut = StatutNotificationSms.Echec;
-                sms.Erreur = "Numéro de téléphone invalide (attendu : 9 chiffres commençant par 6, indicatif +224)";
-            }
-            else
-            {
-                sms.Telephone = numero;
-                var autorises = _configuration.GetSection("Sms:NumerosAutorises").Get<string[]>() ?? [];
-                // Par sécurité, sans Sms:EnvoyerATous=true, seuls les numéros listés reçoivent un vrai SMS.
-                var autorise = _configuration.GetValue<bool>("Sms:EnvoyerATous") || autorises.Select(NormaliserTelephone).Contains(numero);
-                if (!EstSimulation && !autorise)
-                {
-                    sms.Statut = StatutNotificationSms.Simule;
-                    sms.Erreur = "Numéro hors de la liste de test (Sms:NumerosAutorises) : SMS non envoyé";
-                    await EnregistrerAsync(sms);
-                    return;
-                }
-                try
-                {
-                    sms.ReferenceFournisseur = await _fournisseur.EnvoyerAsync(numero, texte, sms.Canal);
-                    sms.Statut = EstSimulation ? StatutNotificationSms.Simule : StatutNotificationSms.Envoye;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Échec de l'envoi du SMS « {Evenement} » à l'utilisateur {Id}", evenement, destinataire.Id);
-                    sms.Statut = StatutNotificationSms.Echec;
-                    sms.Erreur = Tronquer(ex.Message, 500);
-                }
-            }
-            await EnregistrerAsync(sms);
+            await _boite.AjouterSmsAsync(destinataire, evenement.Length > 50 ? evenement[..50] : evenement, texte, Canal);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Impossible d'enregistrer le SMS « {Evenement} » de l'utilisateur {Id}", evenement, destinataire.Id);
+            _logger.LogError(ex, "Impossible de mettre en file le SMS « {Evenement} » de l'utilisateur {Id}", evenement, destinataire.Id);
         }
     }
 
     /// <summary>
-    /// Enregistré par un contexte à part sur la même connexion (et la même transaction s'il y en a une) : les modifications
-    /// encore en attente de l'appelant ne sont pas enregistrées à sa place, et SQLite ne se bloque pas sur deux connexions.
+    /// Envoi réel (ou simulé) d'un SMS de la boîte d'envoi : renvoie la trace NotificationsSms à enregistrer.
+    /// Numéro invalide : trace en Echec (définitif). Erreur du fournisseur : exception (nouvelle tentative plus tard).
     /// </summary>
-    private async Task EnregistrerAsync(NotificationSms sms)
+    public async Task<NotificationSms> TransmettreAsync(MessageSortant message)
     {
-        var options = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(_context.Database.GetDbConnection()).Options;
-        await using var contexte = new AppDbContext(options);
-        if (_context.Database.CurrentTransaction is { } transaction)
+        var sms = new NotificationSms
         {
-            await contexte.Database.UseTransactionAsync(transaction.GetDbTransaction());
+            UtilisateurId = message.UtilisateurId ?? 0,
+            Canal = message.Canal ?? Canal,
+            Texte = message.Contenu,
+            Evenement = message.Evenement.Length > 50 ? message.Evenement[..50] : message.Evenement,
+            DateEnvoi = DateTime.UtcNow
+        };
+        var numero = NormaliserTelephone(message.Destinataire);
+        if (numero is null)
+        {
+            sms.Telephone = Tronquer(message.Destinataire, 30);
+            sms.Statut = StatutNotificationSms.Echec;
+            sms.Erreur = "Numéro de téléphone invalide (attendu : 9 chiffres commençant par 6, indicatif +224)";
+            return sms;
         }
-        contexte.NotificationsSms.Add(sms);
-        await contexte.SaveChangesAsync();
+        sms.Telephone = numero;
+        var autorises = _configuration.GetSection("Sms:NumerosAutorises").Get<string[]>() ?? [];
+        // Par sécurité, sans Sms:EnvoyerATous=true, seuls les numéros listés reçoivent un vrai SMS.
+        var autorise = _configuration.GetValue<bool>("Sms:EnvoyerATous") || autorises.Select(NormaliserTelephone).Contains(numero);
+        if (!EstSimulation && !autorise)
+        {
+            sms.Statut = StatutNotificationSms.Simule;
+            sms.Erreur = "Numéro hors de la liste de test (Sms:NumerosAutorises) : SMS non envoyé";
+            return sms;
+        }
+        sms.ReferenceFournisseur = await _fournisseur.EnvoyerAsync(numero, sms.Texte, sms.Canal);
+        sms.Statut = EstSimulation ? StatutNotificationSms.Simule : StatutNotificationSms.Envoye;
+        return sms;
     }
+
+    /// <summary>Trace d'un SMS abandonné après plusieurs échecs du fournisseur.</summary>
+    public NotificationSms TraceEchec(MessageSortant message, int utilisateurId, string? erreur) => new()
+    {
+        UtilisateurId = utilisateurId,
+        Canal = message.Canal ?? Canal,
+        Texte = message.Contenu,
+        Evenement = message.Evenement.Length > 50 ? message.Evenement[..50] : message.Evenement,
+        Telephone = Tronquer(NormaliserTelephone(message.Destinataire) ?? message.Destinataire, 30),
+        Statut = StatutNotificationSms.Echec,
+        Erreur = erreur is null ? null : Tronquer(erreur, 500),
+        DateEnvoi = DateTime.UtcNow
+    };
 
     /// <summary>
     /// Numéro guinéen normalisé « +2246XXXXXXXX » : 9 chiffres commençant par 6, avec ou sans indicatif (+224, 00224, 224).

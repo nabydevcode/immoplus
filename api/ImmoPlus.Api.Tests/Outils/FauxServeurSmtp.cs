@@ -29,6 +29,11 @@ public sealed class FauxServeurSmtp : IAsyncDisposable
 
     public int Port { get; }
 
+    private int _refusAVenir;
+
+    /// <summary>Les <paramref name="nombre"/> prochains envois sont refusés (451, panne passagère du serveur) : nouvelles tentatives.</summary>
+    public void RefuserProchainsEnvois(int nombre) => Interlocked.Exchange(ref _refusAVenir, nombre);
+
     public IReadOnlyList<EmailCapture> Emails => _emails.ToArray();
 
     public IReadOnlyList<EmailCapture> EmailsPour(string destinataire) =>
@@ -71,6 +76,12 @@ public sealed class FauxServeurSmtp : IAsyncDisposable
                 else if (commande.StartsWith("MAIL FROM"))
                 {
                     destinataires.Clear();
+                    if (Interlocked.Decrement(ref _refusAVenir) >= 0)
+                    {
+                        await ecrivain.WriteLineAsync("451 Service momentanement indisponible");
+                        continue;
+                    }
+                    Interlocked.Exchange(ref _refusAVenir, 0);
                     await ecrivain.WriteLineAsync("250 OK");
                 }
                 else if (commande.StartsWith("RCPT TO"))

@@ -20,6 +20,8 @@ public class RappelsResultatDto
     public int InstructionsArrivee { get; set; }
     /// <summary>Entrées du journal des actions de plus de 2 ans supprimées (hors total : ce ne sont pas des emails).</summary>
     public int JournalPurge { get; set; }
+    /// <summary>Messages de la boîte d'envoi traités depuis plus de 90 jours, supprimés (hors total).</summary>
+    public int MessagesPurges { get; set; }
     public int Total => RappelsMensualites + RappelsLoyers + RetardsMensualites + RetardsLoyers + RecapitulatifsAdmin + DemandesReservationExpirees + ReservationsImpayeesAnnulees
         + InstructionsArrivee;
 }

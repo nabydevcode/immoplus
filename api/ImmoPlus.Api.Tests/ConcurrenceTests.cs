@@ -75,12 +75,39 @@ public class ConcurrenceTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFactory
             var paiement = admin.Client.PayerReservation(reservation.Id, reservation.MontantTotal - 100_000m);
             await Task.WhenAll(annulation, paiement);
 
-            Assert.Equal(HttpStatusCode.NoContent, annulation.Result.StatusCode);
-            Assert.Contains(paiement.Result.StatusCode, new[] { HttpStatusCode.OK, HttpStatusCode.Conflict });
+            Assert.Equal(HttpStatusCode.NoContent, (await annulation).StatusCode);
+            Assert.Contains((await paiement).StatusCode, new[] { HttpStatusCode.OK, HttpStatusCode.Conflict });
             var relue = await voyageur.Client.Reservation(reservation.Id);
             Assert.Equal("Annulee", relue.Statut);
             // Politique flexible, annulation 30 jours avant : tout ce qui a été payé est rendu.
             Assert.Equal(relue.MontantPaye, relue.MontantARembourser);
+        }
+    }
+
+    /// <summary>
+    /// PostgreSQL (Read Committed) laisse deux transactions lire le même reste dû : sans le verrou de la réservation,
+    /// plusieurs paiements du solde seraient acceptés et la réservation payée deux fois.
+    /// </summary>
+    [Fact]
+    public async Task Paiements_simultanes_du_solde_un_seul_accepte()
+    {
+        var admin = await f.AdminAsync();
+        var bailleur = await f.BailleurAsync();
+        var logement = await bailleur.SejourCourtAsync();
+        for (var essai = 0; essai < 5; essai++)
+        {
+            var voyageur = await f.LocataireAsync();
+            var reservation = await voyageur.ReserverOk(logement.Id, 10 + essai * 5, 2);
+            await admin.Client.PayerReservation(reservation.Id, 100_000m).Verifier(HttpStatusCode.OK);
+            var solde = reservation.MontantTotal - 100_000m;
+
+            var reponses = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => admin.Client.PayerReservation(reservation.Id, solde)));
+
+            Assert.Single(reponses, r => r.StatusCode == HttpStatusCode.OK);
+            Assert.All(reponses.Where(r => r.StatusCode != HttpStatusCode.OK), r => Assert.Equal(HttpStatusCode.Conflict, r.StatusCode));
+            var paye = await f.LireBaseAsync(db => db.Paiements.Where(p => p.ReservationId == reservation.Id).SumAsync(p => p.Montant));
+            Assert.Equal(reservation.MontantTotal, paye);
+            Assert.Equal("Confirmee", (await admin.Client.Reservation(reservation.Id)).Statut);
         }
     }
 

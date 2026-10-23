@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { AlertCircle, Inbox } from "lucide-react";
+import { AlertCircle, ChevronDown, ChevronLeft, ChevronRight, Inbox } from "lucide-react";
 
 export function EnTete({ titre, description, action }: { titre: string; description: string; action?: ReactNode }) {
   return (
@@ -127,6 +127,83 @@ export function Onglets<T extends string>({
           )}
         </button>
       ))}
+    </div>
+  );
+}
+
+/** Navigation entre les pages d'un tableau (masquée s'il n'y a qu'une page). */
+export function Pagination({
+  page,
+  totalPages,
+  onChange,
+  total,
+}: {
+  page: number;
+  totalPages: number;
+  onChange: (page: number) => void;
+  /** Nombre total d'éléments (toutes pages), affiché à côté du numéro de page. */
+  total?: number;
+}) {
+  if (totalPages <= 1) return null;
+  return (
+    <nav aria-label="Pagination" className="flex flex-wrap items-center justify-center gap-3 mt-4 text-sm">
+      <button
+        type="button"
+        onClick={() => onChange(page - 1)}
+        disabled={page <= 1}
+        className="inline-flex items-center gap-1 text-xs px-3 py-1.5 font-semibold rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+      >
+        <ChevronLeft size={14} />
+        Précédente
+      </button>
+      <span className="text-gray-600">
+        Page {page} sur {totalPages}
+        {total !== undefined && <span className="text-gray-400"> · {total} au total</span>}
+      </span>
+      <button
+        type="button"
+        onClick={() => onChange(page + 1)}
+        disabled={page >= totalPages}
+        className="inline-flex items-center gap-1 text-xs px-3 py-1.5 font-semibold rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+      >
+        Suivante
+        <ChevronRight size={14} />
+      </button>
+    </nav>
+  );
+}
+
+/** Bouton « Voir plus » sous une liste chargée par pages (masqué quand tout est affiché). */
+export function VoirPlus({
+  aPlus,
+  chargement,
+  onClick,
+  affiches,
+  total,
+  libelle = "Voir plus",
+}: {
+  aPlus: boolean;
+  chargement: boolean;
+  onClick: () => void;
+  affiches: number;
+  total: number;
+  libelle?: string;
+}) {
+  if (!aPlus) return null;
+  return (
+    <div className="flex flex-col items-center gap-2 mt-6">
+      <p className="text-xs text-gray-500" aria-live="polite">
+        {affiches} sur {total} affichés
+      </p>
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={chargement}
+        className="inline-flex items-center justify-center gap-1.5 text-sm px-5 py-2 font-semibold rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+      >
+        <ChevronDown size={16} />
+        {chargement ? "Chargement..." : libelle}
+      </button>
     </div>
   );
 }

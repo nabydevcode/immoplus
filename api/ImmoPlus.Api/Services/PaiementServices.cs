@@ -18,6 +18,33 @@ public class PaiementServices
         _notificationServices = notificationServices;
     }
 
+    /// <summary>Verrou de la ressource dont dépend le reste dû ; une cible introuvable est signalée ensuite (404) par la lecture.</summary>
+    private async Task VerrouillerCibleAsync(PaiementDto dto)
+    {
+        if (dto.LoyerId is not null)
+        {
+            var locationId = await _context.Loyers.Where(l => l.Id == dto.LoyerId).Select(l => (int?)l.LocationId).FirstOrDefaultAsync();
+            if (locationId is not null)
+            {
+                await _context.Database.VerrouillerAsync(RessourceVerrouillee.Location, locationId.Value);
+            }
+        }
+        else if (dto.MensualiteId is not null)
+        {
+            // Par financement (pas par mensualité) : le solde du financement dépend de toutes ses échéances.
+            var financementId = await _context.Mensualites.Where(m => m.Id == dto.MensualiteId)
+                .Select(m => (int?)m.FinancementLocationId).FirstOrDefaultAsync();
+            if (financementId is not null)
+            {
+                await _context.Database.VerrouillerAsync(RessourceVerrouillee.Financement, financementId.Value);
+            }
+        }
+        else
+        {
+            await _context.Database.VerrouillerAsync(RessourceVerrouillee.Reservation, dto.ReservationId!.Value);
+        }
+    }
+
     public async Task<PaiementResponseDto> EnregistrerPaiementAsync(PaiementDto dto, int utilisateurId, RoleUtilisateur role) =>
         (await EnregistrerAsync(dto, utilisateurId, role, argentDejaRecu: false)).Paiement;
 
@@ -77,9 +104,11 @@ public class PaiementServices
         var financementSolde = false;
         var apresAnnulation = false;
 
-        // Lecture du reste dû et écriture du paiement d'un seul tenant (SQLite : verrou d'écriture dès le début) :
-        // deux enregistrements simultanés (double clic, admin + paiement mobile) ne peuvent pas dépasser le montant dû.
+        // Lecture du reste dû et écriture du paiement d'un seul tenant, sous le verrou de la ressource payée (réservation,
+        // financement ou location) : deux enregistrements simultanés (double clic, admin + paiement mobile, annulation au même
+        // instant) s'exécutent l'un après l'autre et ne peuvent pas dépasser le montant dû.
         await using var transaction = _context.Database.CurrentTransaction is null ? await _context.Database.BeginTransactionAsync() : null;
+        await VerrouillerCibleAsync(dto);
 
         if (dto.LoyerId is not null)
         {

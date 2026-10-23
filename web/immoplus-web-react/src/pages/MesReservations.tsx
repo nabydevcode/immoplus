@@ -15,7 +15,8 @@ import {
   Users,
 } from "lucide-react";
 import { useAuth } from "../context/auth";
-import { Badge, MessageErreur, Onglets } from "../components/admin/ui";
+import { Badge, MessageErreur, Onglets, VoirPlus } from "../components/admin/ui";
+import { useListeAOnglets } from "../components/admin/pagination";
 import {
   classeBoutonDanger,
   classeBoutonPrincipal,
@@ -23,7 +24,6 @@ import {
   formaterDate,
   formaterMontant,
   formaterReference,
-  useChargement,
 } from "../components/admin/outils";
 import type { ReservationDto } from "../types/models";
 import DetailPrix from "../components/sejour/DetailPrix";
@@ -55,21 +55,44 @@ import { useLienConnexion } from "../hooks/useLienConnexion";
 type Filtre = "AVenir" | "AEvaluer" | "Toutes";
 type Volet = "messages" | "avis" | "monAvis" | "annulation" | "paiement" | "paiements" | "arrivee" | "etatDesLieux";
 
+/** Onglets demandés à l'API (reservation/lister?filtre=…), avec le même calcul local tant qu'elle n'est pas paginée. */
+const ONGLETS = ["AVenir", "AEvaluer", "Toutes"] as const;
+const requeteOnglet = (f: Filtre) => (f === "Toutes" ? "" : `filtre=${f}`);
+const aujourdhuiLocal = () => jourLocal();
+const dansOnglet = (f: Filtre, r: ReservationDto) => {
+  const aujourdhui = aujourdhuiLocal();
+  if (f === "AVenir") return estActive(r) && jour(r.dateDepart) >= aujourdhui;
+  if (f === "AEvaluer") return avisVoyageurPossible(r, aujourdhui);
+  return true;
+};
+// À venir : par date d'arrivée ; à évaluer et toutes : les plus récentes en premier.
+const trier = (f: Filtre, a: ReservationDto, b: ReservationDto) =>
+  f === "AVenir" ? a.dateArrivee.localeCompare(b.dateArrivee) : b.dateArrivee.localeCompare(a.dateArrivee);
+const LOCAL = { dansOnglet, trier };
+
 export default function MesReservations() {
   const { estConnecte, roleUtilisateur, utilisateurId } = useAuth();
   const lienConnexion = useLienConnexion();
   const estLocataire = estConnecte && roleUtilisateur === "Locataire";
-  const { donnees, chargement, erreur, recharger } = useChargement<ReservationDto[]>(
-    estLocataire ? "reservation/lister" : null,
-  );
-  const [aujourdhui] = useState(jourLocal);
   const [filtreChoisi, setFiltre] = useState<Filtre | null>(null);
   const [detailOuvert, setDetailOuvert] = useState<number | null>(null);
   const [volet, setVolet] = useState<{ id: number; volet: Volet } | null>(null);
   const [confirmation, setConfirmation] = useState<string | null>(null);
   const basculer = (id: number, v: Volet) => setVolet(volet?.id === id && volet.volet === v ? null : { id, volet: v });
   // Messages non lus en temps réel : pastilles des onglets et des boutons « Messages » de chaque réservation.
-  const nonLus = useNonLus(estLocataire);
+  const nonLus = useNonLus(estLocataire, ONGLETS);
+  const [aujourdhui] = useState(jourLocal);
+  // Compteurs des onglets (requêtes séparées) : l'onglet par défaut en dépend.
+  const [ongletDemande, setOngletDemande] = useState<Filtre>("AVenir");
+  const liste = useListeAOnglets<ReservationDto, Filtre>({
+    base: estLocataire ? "reservation/lister" : null,
+    onglet: filtreChoisi ?? ongletDemande,
+    onglets: ONGLETS,
+    requeteOnglet,
+    mode: "progressif",
+    local: LOCAL,
+  });
+  const { chargement, erreur, recharger, compteurs } = liste;
 
   if (!estLocataire) {
     return (
@@ -82,19 +105,21 @@ export default function MesReservations() {
     );
   }
 
-  const reservations = [...(donnees ?? [])].sort((a, b) => a.dateArrivee.localeCompare(b.dateArrivee));
-  const aVenir = reservations.filter((r) => estActive(r) && jour(r.dateDepart) >= aujourdhui);
-  const aEvaluer = reservations.filter((r) => avisVoyageurPossible(r, aujourdhui)).reverse();
+  const nbAEvaluer = compteurs.AEvaluer ?? 0;
+  const nbToutes = compteurs.Toutes ?? 0;
+  /** « À venir (3) », ou « À venir » si l'API ne fournit pas ce compteur. */
+  const libelle = (f: Filtre, texte: string) => (compteurs[f] !== undefined ? `${texte} (${compteurs[f]})` : texte);
+  // L'onglet « À évaluer » n'apparaît que s'il y a des séjours à évaluer (ou si leur nombre est inconnu).
+  const avecAEvaluer = liste.compteursCharges && compteurs.AEvaluer !== 0;
   const nonLusDe1 = (r: ReservationDto) =>
     nonLus.charge ? (nonLus.parReservation.get(r.id) ?? 0) : (r.messagesNonLus ?? 0);
-  const nonLusDe = (liste: ReservationDto[]) => liste.reduce((somme, r) => somme + nonLusDe1(r), 0);
   // Sans séjour à venir, la page s'ouvre sur les séjours à évaluer (lien de l'e-mail « Séjour terminé »).
-  const filtre: Filtre =
-    filtreChoisi === "AEvaluer" && aEvaluer.length === 0
-      ? "Toutes"
-      : (filtreChoisi ?? (aVenir.length === 0 && aEvaluer.length > 0 ? "AEvaluer" : "AVenir"));
-  // « Toutes » : les plus récentes en premier.
-  const affichees = filtre === "AVenir" ? aVenir : filtre === "AEvaluer" ? aEvaluer : [...reservations].reverse();
+  const filtreParDefaut: Filtre = compteurs.AVenir === 0 && nbAEvaluer > 0 ? "AEvaluer" : "AVenir";
+  if (filtreChoisi === null && ongletDemande !== filtreParDefaut) setOngletDemande(filtreParDefaut);
+  // Plus aucun séjour à évaluer (avis envoyé) : retour sur toutes les réservations.
+  if (filtreChoisi === "AEvaluer" && compteurs.AEvaluer === 0) setFiltre("Toutes");
+  const filtre: Filtre = filtreChoisi ?? ongletDemande;
+  const affichees = liste.elements;
   const changerFiltre = (f: Filtre) => {
     setFiltre(f);
     setVolet(null);
@@ -111,19 +136,25 @@ export default function MesReservations() {
           valeur={filtre}
           onChange={changerFiltre}
           options={[
-            { valeur: "AVenir", label: `À venir (${aVenir.length})`, pastille: nonLusDe(aVenir) },
-            ...(aEvaluer.length > 0
-              ? [{ valeur: "AEvaluer" as const, label: `À évaluer (${aEvaluer.length})`, pastille: nonLusDe(aEvaluer) }]
+            { valeur: "AVenir", label: libelle("AVenir", "À venir"), pastille: nonLus.parFiltre.AVenir },
+            ...(avecAEvaluer || filtre === "AEvaluer"
+              ? [
+                  {
+                    valeur: "AEvaluer" as const,
+                    label: libelle("AEvaluer", "À évaluer"),
+                    pastille: nonLus.parFiltre.AEvaluer,
+                  },
+                ]
               : []),
-            { valeur: "Toutes", label: `Toutes (${reservations.length})`, pastille: nonLusDe(reservations) },
+            // Messages non lus par onglet (GET messages/non-lus?filtre=…), quelles que soient les pages chargées.
+            { valeur: "Toutes", label: libelle("Toutes", "Toutes"), pastille: nonLus.total },
           ]}
         />
 
-        {filtre === "AVenir" && aEvaluer.length > 0 && (
+        {filtre === "AVenir" && nbAEvaluer > 0 && (
           <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm bg-immo-gold/15 rounded-xl px-4 py-3 mb-4">
             <Star size={16} className="text-immo-gold shrink-0" fill="currentColor" />
-            {aEvaluer.length > 1 ? `${aEvaluer.length} séjours terminés attendent` : "Un séjour terminé attend"} votre
-            avis.
+            {nbAEvaluer > 1 ? `${nbAEvaluer} séjours terminés attendent` : "Un séjour terminé attend"} votre avis.
             <button type="button" onClick={() => changerFiltre("AEvaluer")} className="font-semibold underline">
               Laisser un avis
             </button>
@@ -139,7 +170,7 @@ export default function MesReservations() {
           <div className="bg-white rounded-2xl shadow-sm border border-black/5 py-14 px-6 text-center">
             <CalendarX size={32} className="mx-auto text-immo-gold mb-3" />
             <p className="text-gray-500 mb-4">
-              {filtre === "AVenir" && reservations.length > 0
+              {filtre === "AVenir" && nbToutes > 0
                 ? "Aucune réservation à venir."
                 : "Vous n'avez encore réservé aucun séjour."}
             </p>
@@ -400,7 +431,6 @@ export default function MesReservations() {
                       interlocuteur={r.bailleurNom ? `l'hôte (${r.bailleurNom})` : "l'hôte"}
                       confirmee={r.statut === "Confirmee" || r.statut === "Terminee"}
                       fermee={!messagerieOuverte(r, aujourdhui)}
-                      onLu={nonLus > 0 ? recharger : undefined}
                     />
                   )}
                   {ouvert === "avis" && (
@@ -434,6 +464,14 @@ export default function MesReservations() {
                 </article>
               );
             })}
+            <VoirPlus
+              aPlus={liste.aPlus}
+              chargement={liste.chargementPlus}
+              onClick={liste.chargerPlus}
+              affiches={affichees.length}
+              total={liste.total}
+              libelle="Voir plus de réservations"
+            />
           </div>
         )}
       </div>

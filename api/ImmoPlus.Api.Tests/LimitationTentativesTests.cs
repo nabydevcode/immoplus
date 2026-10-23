@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 using ImmoPlus.Api.Tests.Outils;
 
 /// <summary>
-/// Limitation des essais de connexion et des demandes de mot de passe oublié. Chaque test démarre sa propre API :
+/// Limitation des essais de connexion et des demandes de mot de passe oublié. Chaque test démarre sa propre API (sans Redis) :
 /// les compteurs sont en mémoire et partagés par toutes les requêtes du serveur de test (même adresse IP).
 /// </summary>
 public class LimitationTentativesTests
@@ -78,9 +78,9 @@ public class LimitationTentativesTests
         // Email inconnu : même réponse, pour ne pas révéler les comptes existants.
         await anonyme.PostJson("/utilisateur/mot-de-passe-oublie", new { email = "personne@tests.immoplus.test" }).Verifier(HttpStatusCode.OK);
 
-        var emails = f.Smtp.EmailsPour(locataire.Email).Where(e => e.Sujet.Contains("Réinitialisation")).ToList();
+        var emails = (await f.EmailsPourAsync(locataire.Email)).Where(e => e.Sujet.Contains("Réinitialisation")).ToList();
         Assert.Equal(5, emails.Count);
-        Assert.Empty(f.Smtp.EmailsPour("personne@tests.immoplus.test"));
+        Assert.Empty(await f.EmailsPourAsync("personne@tests.immoplus.test"));
 
         // Seul le dernier lien envoyé est valable.
         var jeton = Regex.Match(emails[^1].CorpsHtml, "jeton=([0-9a-f]+)").Groups[1].Value;

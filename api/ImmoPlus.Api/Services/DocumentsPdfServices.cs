@@ -29,12 +29,13 @@ public class DocumentsPdfServices
     }
 
     private readonly AppDbContext _context;
-    private readonly EtatDesLieuxServices _etatDesLieux;
+    /// <summary>Photos d'état des lieux intégrées au PDF (miniatures lues depuis le stockage, disque ou S3).</summary>
+    private readonly IStockageFichiers _stockage;
 
-    public DocumentsPdfServices(AppDbContext context, EtatDesLieuxServices etatDesLieux)
+    public DocumentsPdfServices(AppDbContext context, IStockageFichiers stockage)
     {
         _context = context;
-        _etatDesLieux = etatDesLieux;
+        _stockage = stockage;
     }
 
     public readonly record struct FichierPdf(byte[] Contenu, string NomFichier);
@@ -318,7 +319,7 @@ public class DocumentsPdfServices
         var images = new Dictionary<int, byte[]?>();
         foreach (var photo in photos)
         {
-            images[photo.Id] = await TraitementImages.MiniatureJpegAsync(Path.Combine(_etatDesLieux.DossierRacine, photo.Chemin));
+            images[photo.Id] = await TraitementImages.MiniatureJpegAsync(_stockage, EtatDesLieuxServices.Cle(photo));
         }
 
         var contenu = Generer("État des lieux", $"Réservation n° {reservation.Id:D6}", col =>

@@ -49,4 +49,8 @@ public class RechercheAppartementDto
     public int? ChambresMin { get; set; }
     /// <summary>Durée d'avance exigée maximum (mois).</summary>
     public int? AvanceMax { get; set; }
+    /// <summary>Annonces supprimées (true) ou publiées (false) ; sans effet pour le public, qui ne voit jamais les supprimées.</summary>
+    public bool? Supprimes { get; set; }
+    /// <summary>Recherche libre : n° d'annonce, adresse, ville, quartier ou nom du bailleur (sans accents ni casse).</summary>
+    public string? Q { get; set; }
 }

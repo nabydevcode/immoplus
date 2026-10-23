@@ -1,11 +1,81 @@
 namespace ImmoPlus.Api.Data;
 
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using ImmoPlus.Api.Models;
 
 public class AppDbContext : DbContext
 {
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
+
+    /// <summary>Réglages PostgreSQL communs à l'API, aux contextes annexes (journal, SMS) et aux outils (tests, migration des données).</summary>
+    public static DbContextOptionsBuilder Configurer(DbContextOptionsBuilder options, string chaineConnexion) =>
+        options.UseNpgsql(chaineConnexion);
+
+    /// <summary>Taille maximale du pool Npgsql par instance quand la chaîne de connexion ne la fixe pas.</summary>
+    public const int TaillePoolParDefaut = 40;
+
+    /// <summary>
+    /// Chaîne de connexion avec « Maximum Pool Size » = <paramref name="taille"/>, sauf si elle en fixe déjà une (elle prime).
+    /// </summary>
+    public static string AvecPoolParDefaut(string chaineConnexion, int taille)
+    {
+        var lue = new Npgsql.NpgsqlConnectionStringBuilder(chaineConnexion);
+        var explicite = new System.Data.Common.DbConnectionStringBuilder { ConnectionString = chaineConnexion }.Keys
+            .Cast<string>()
+            .Any(cle => cle.Replace(" ", "").ToLowerInvariant() is "maximumpoolsize" or "maxpoolsize");
+        if (explicite)
+        {
+            return chaineConnexion;
+        }
+        lue.MaxPoolSize = Math.Max(1, taille);
+        return lue.ConnectionString;
+    }
+
+    /// <summary>
+    /// Contexte séparé sur la même connexion et, s'il y en a une, la même transaction que <paramref name="principal"/> :
+    /// écrit une trace (journal, SMS) sans enregistrer par mégarde les modifications en attente de l'appelant.
+    /// EF Core pose un point de sauvegarde avant chaque SaveChanges dans une transaction en cours : un échec d'écriture
+    /// de la trace n'invalide donc pas la transaction de l'appelant (PostgreSQL l'abandonnerait sinon).
+    /// </summary>
+    public static async Task<AppDbContext> AnnexeAsync(AppDbContext principal)
+    {
+        DbConnection connexion = principal.Database.GetDbConnection();
+        var contexte = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connexion).Options);
+        if (principal.Database.CurrentTransaction is { } transaction)
+        {
+            await contexte.Database.UseTransactionAsync(transaction.GetDbTransaction());
+        }
+        return contexte;
+    }
+
+    /// <summary>
+    /// Dates : toutes en « timestamp without time zone », valeurs UTC. Les dates « jour » (arrivée, échéance… à minuit)
+    /// sont stockées telles quelles et ne se décalent jamais ; les horodatages (DateTime.UtcNow) restent en UTC.
+    /// Le genre (Kind) est ignoré à l'écriture — Npgsql refuserait sinon un DateTime « Utc » dans cette colonne — et vaut
+    /// « Utc » à la lecture. La sérialisation JSON (ConvertisseurDateUtc) ajoute « Z » aux seuls horodatages.
+    /// </summary>
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+    {
+        configurationBuilder.Properties<DateTime>().HaveColumnType("timestamp without time zone").HaveConversion<ConvertisseurDateBase>();
+        configurationBuilder.Properties<DateTime?>().HaveColumnType("timestamp without time zone").HaveConversion<ConvertisseurDateBase>();
+    }
+
+    public sealed class ConvertisseurDateBase() : ValueConverter<DateTime, DateTime>(
+        v => DateTime.SpecifyKind(v, DateTimeKind.Unspecified),
+        v => DateTime.SpecifyKind(v, DateTimeKind.Utc));
+
+    /// <summary>
+    /// Texte sans accents, traduit en SQL par immoplus_sans_accents(texte) : enveloppe IMMUTABLE de unaccent créée par la
+    /// migration IndexEtPerformances, indexable (index trigrammes pg_trgm des recherches « contient » sans accents).
+    /// À utiliser dans les requêtes à la place de EF.Functions.Unaccent quand la colonne a un index trigrammes.
+    /// </summary>
+    public static string SansAccents(string texte) => throw new NotSupportedException("Uniquement dans une requête EF Core (SQL)");
+
+    /// <summary>Nom SQL de <see cref="SansAccents"/>.</summary>
+    public const string FonctionSansAccents = "immoplus_sans_accents";
 
     public DbSet<Utilisateur> Utilisateurs { get; set; }
     public DbSet<Appartement> Appartements { get; set; }
@@ -31,9 +101,17 @@ public class AppDbContext : DbContext
     public DbSet<JournalAction> JournalActions { get; set; }
     public DbSet<Signalement> Signalements { get; set; }
     public DbSet<PieceIdentite> PiecesIdentite { get; set; }
+    public DbSet<MessageSortant> MessagesSortants { get; set; }
+    public DbSet<ExecutionPlanifiee> ExecutionsPlanifiees { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        // Recherches sans accents (« Kipé » / « kipe ») : EF.Functions.Unaccent dans les requêtes.
+        modelBuilder.HasPostgresExtension("unaccent");
+        // Index trigrammes des recherches « contient » (ville, quartier, nom…) : voir la migration IndexEtPerformances.
+        modelBuilder.HasPostgresExtension("pg_trgm");
+        modelBuilder.HasDbFunction(typeof(AppDbContext).GetMethod(nameof(SansAccents))!).HasName(FonctionSansAccents);
+
         // --- Relations ---
 
         modelBuilder.Entity<Visite>()
@@ -313,7 +391,51 @@ public class AppDbContext : DbContext
             .HasFilter("\"Statut\" = 0");
         modelBuilder.Entity<PieceIdentite>().HasIndex(p => new { p.Statut, p.DateEnvoi });
 
-        // --- Précision des montants (obligatoire pour SQLite) ---
+        // Boîte d'envoi : sans clé étrangère (comme le journal). Index du dépilage (statut + prochaine tentative).
+        modelBuilder.Entity<MessageSortant>().Property(m => m.Destinataire).HasMaxLength(256);
+        modelBuilder.Entity<MessageSortant>().Property(m => m.Sujet).HasMaxLength(300);
+        modelBuilder.Entity<MessageSortant>().Property(m => m.Reference).HasMaxLength(60);
+        modelBuilder.Entity<MessageSortant>().Property(m => m.Evenement).HasMaxLength(60);
+        modelBuilder.Entity<MessageSortant>().Property(m => m.DerniereErreur).HasMaxLength(1000);
+        modelBuilder.Entity<MessageSortant>().HasIndex(m => new { m.Statut, m.ProchaineTentative });
+        modelBuilder.Entity<MessageSortant>().HasIndex(m => m.DateCreation);
+
+        modelBuilder.Entity<ExecutionPlanifiee>().HasKey(e => e.Nom);
+        modelBuilder.Entity<ExecutionPlanifiee>().Property(e => e.Nom).HasMaxLength(50);
+        modelBuilder.Entity<ExecutionPlanifiee>().Property(e => e.Instance).HasMaxLength(100);
+
+        // --- Index des listes et recherches (migration IndexEtPerformances, mesurés sur la base de charge) ---
+        // Tri des listes « les plus récentes d'abord » et filtres par participant, toujours terminés par l'Id (tri stable).
+        modelBuilder.Entity<Reservation>().HasIndex(r => new { r.LocataireId, r.DateCreation, r.Id }).HasDatabaseName("IX_Reservations_LocataireId_DateCreation");
+        modelBuilder.Entity<Reservation>().HasIndex(r => new { r.DateCreation, r.Id }).HasDatabaseName("IX_Reservations_DateCreation");
+        // Chevauchement de dates d'un logement (disponibilité, calendrier, devis) : AppartementId + bornes du séjour.
+        modelBuilder.Entity<Reservation>().HasIndex(r => new { r.AppartementId, r.DateArrivee, r.DateDepart }).HasDatabaseName("IX_Reservations_AppartementId_Dates");
+        // Réservations des logements d'un hôte (messages non lus, côté hôte) : parcours d'index seul (AppartementId → Id), sans lire
+        // la table ; mesuré sur la base de charge, hôte de 313 logements : 31 ms (parcours complet des 50 000 réservations) → 4 ms.
+        modelBuilder.Entity<Reservation>().HasIndex(r => new { r.AppartementId, r.Id }).HasDatabaseName("IX_Reservations_AppartementId_Id");
+        // Traitements automatiques (expiration des impayées, fin des séjours, demandes sans réponse) : petits index partiels par statut.
+        modelBuilder.Entity<Reservation>().HasIndex(r => r.DateDepart).HasDatabaseName("IX_Reservations_Confirmees_DateDepart")
+            .HasFilter("\"Statut\" = 1");
+        modelBuilder.Entity<Reservation>().HasIndex(r => r.DateCreation).HasDatabaseName("IX_Reservations_EnAttente_DateCreation")
+            .HasFilter("\"Statut\" IN (0, 4)");
+        modelBuilder.Entity<Indisponibilite>().HasIndex(i => new { i.AppartementId, i.DateDebut, i.DateFin }).HasDatabaseName("IX_Indisponibilites_AppartementId_Dates");
+        // Fil de messages (page la plus récente) et messages non lus d'une conversation.
+        modelBuilder.Entity<Message>().HasIndex(m => new { m.ReservationId, m.Id }).HasDatabaseName("IX_Messages_ReservationId_Id");
+        modelBuilder.Entity<Message>().HasIndex(m => new { m.ReservationId, m.AuteurId }).HasDatabaseName("IX_Messages_NonLus")
+            .HasFilter("\"DateLecture\" IS NULL");
+        modelBuilder.Entity<Candidature>().HasIndex(c => new { c.LocataireId, c.DateSoumission, c.Id }).HasDatabaseName("IX_Candidatures_LocataireId_DateSoumission");
+        modelBuilder.Entity<Candidature>().HasIndex(c => new { c.AppartementId, c.Statut }).HasDatabaseName("IX_Candidatures_AppartementId_Statut");
+        modelBuilder.Entity<Candidature>().HasIndex(c => new { c.DateSoumission, c.Id }).HasDatabaseName("IX_Candidatures_DateSoumission");
+        modelBuilder.Entity<Location>().HasIndex(l => new { l.AppartementId, l.Statut }).HasDatabaseName("IX_Locations_AppartementId_Statut");
+        // Avis publics d'un logement, du plus récent au plus ancien (moyennes calculées sur le même index).
+        modelBuilder.Entity<Avis>().HasIndex(a => new { a.AppartementId, a.DateCreation, a.Id }).HasDatabaseName("IX_Avis_AppartementId_DateCreation");
+        modelBuilder.Entity<Favori>().HasIndex(f => new { f.UtilisateurId, f.DateCreation }).HasDatabaseName("IX_Favoris_UtilisateurId_DateCreation");
+        modelBuilder.Entity<Appartement>().HasIndex(a => new { a.TypeOffre, a.Disponible, a.Id }).HasDatabaseName("IX_Appartements_TypeOffre_Disponible")
+            .HasFilter("NOT \"EstDesactive\"");
+        modelBuilder.Entity<Appartement>().HasIndex(a => new { a.Latitude, a.Longitude }).HasDatabaseName("IX_Appartements_Position");
+        modelBuilder.Entity<Utilisateur>().HasIndex(u => new { u.Role, u.Statut }).HasDatabaseName("IX_Utilisateurs_Role_Statut");
+
+        // --- Précision des montants : numeric(18,2) en GNF ---
         modelBuilder.Entity<Appartement>().Property(a => a.LoyerMensuel).HasPrecision(18, 2);
         modelBuilder.Entity<Appartement>().Property(a => a.PrixParNuit).HasPrecision(18, 2);
         modelBuilder.Entity<FinancementLocation>().Property(f => f.MontantTotal).HasPrecision(18, 2);

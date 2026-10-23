@@ -61,7 +61,13 @@ public class LocationServices
         return location;
     }
 
-    public async Task<List<LocationResponseDto>> ListerAsync(int utilisateurId, RoleUtilisateur role)
+    /// <summary>
+    /// Locations visibles par l'appelant (locataire : les siennes ; bailleur : celles de ses logements ; admin : toutes), paginées,
+    /// les plus récentes d'abord (début puis n°). statut : EnCours, Terminee ou Resiliee. filtre=AEvaluer : avis de l'appelant
+    /// encore possible (fenêtre d'avis ouverte, pas encore donné). q : n° de location, nom du locataire ou adresse.
+    /// </summary>
+    public async Task<PagedResultDto<LocationResponseDto>> ListerAsync(int utilisateurId, RoleUtilisateur role, Pagination pagination,
+        string? statut = null, string? filtre = null, string? q = null)
     {
         var requete = _context.Locations.AsNoTracking().AsQueryable();
 
@@ -75,7 +81,43 @@ public class LocationServices
         }
         // Admin : pas de filtre, toutes les locations.
 
-        return await CompleterAvisAsync(await requete.Select(VersDto).ToListAsync());
+        if (!string.IsNullOrWhiteSpace(statut))
+        {
+            if (int.TryParse(statut, out _) || !Enum.TryParse<StatutLocation>(statut.Trim(), true, out var s) || !Enum.IsDefined(s))
+            {
+                throw new InvalidOperationException("Statut invalide. Utilisez EnCours, Terminee ou Resiliee");
+            }
+            requete = requete.Where(l => l.Statut == s);
+        }
+        if (!string.IsNullOrWhiteSpace(filtre))
+        {
+            if (!filtre.Trim().Equals("AEvaluer", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Filtre invalide. Utilisez AEvaluer");
+            }
+            // Même fenêtre que AvisServices.FenetreAvisLocation, en SQL : 30 jours après la fin, ou 6 mois après la remise des clés.
+            var aujourdhui = DateTime.UtcNow.Date;
+            var finMin = aujourdhui.AddDays(-AvisServices.JoursAvisApresLocation);
+            var remiseMax = aujourdhui.AddMonths(-AvisServices.MoisAvantAvisLocation);
+            var sens = role == RoleUtilisateur.Bailleur ? SensAvis.BailleurVersLocataire : SensAvis.LocataireVersLogement;
+            requete = requete.Where(l => ((l.Statut == StatutLocation.Terminee && l.DateFin != null && l.DateFin >= finMin)
+                    || (l.Statut == StatutLocation.EnCours && l.DateRemiseCles != null && l.DateRemiseCles <= remiseMax))
+                && !_context.Avis.Any(a => a.LocationId == l.Id && a.Sens == sens));
+        }
+        if (!string.IsNullOrWhiteSpace(q))
+        {
+            var numero = RechercheTexte.Reference(q);
+            var motif = RechercheTexte.Contient(q);
+            requete = requete.Where(l => l.Id == numero
+                || EF.Functions.ILike(AppDbContext.SansAccents(l.Locataire!.Nom), AppDbContext.SansAccents(motif))
+                || EF.Functions.ILike(AppDbContext.SansAccents(l.Appartement!.Adresse), AppDbContext.SansAccents(motif)));
+        }
+
+        var (locations, total) = await requete
+            .OrderByDescending(l => l.DateDebut).ThenByDescending(l => l.Id)
+            .Select(VersDto)
+            .PageAsync(pagination);
+        return PagedResultDto<LocationResponseDto>.Creer(await CompleterAvisAsync(locations), pagination, total);
     }
 
     /// <summary>Avis déjà donnés et fenêtre d'avis de chaque location (calculés, rien n'est stocké).</summary>

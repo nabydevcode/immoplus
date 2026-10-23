@@ -22,7 +22,14 @@ export default function MotDePasseOublie() {
       await apiClient.post("utilisateur/mot-de-passe-oublie", { email: email.trim() });
       setEnvoye(true);
     } catch (err) {
-      setMessageErreur(err instanceof ApiError ? err.message : "Impossible d'envoyer la demande. Réessayez plus tard.");
+      // L'email part en arrière-plan : l'API répond toujours de façon neutre, sauf trop de demandes (429).
+      if (err instanceof ApiError && err.statut === 429) {
+        setMessageErreur("Trop de demandes en peu de temps. Patientez quelques minutes avant de réessayer.");
+      } else {
+        setMessageErreur(
+          err instanceof ApiError ? err.message : "Impossible d'envoyer la demande. Réessayez plus tard.",
+        );
+      }
     } finally {
       setEnCours(false);
     }

@@ -12,14 +12,49 @@ using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 using Microsoft.AspNetCore.HttpOverrides;
+using StackExchange.Redis;
+using System.IO.Compression;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.OutputCaching;
+using Microsoft.AspNetCore.ResponseCompression;
+using Microsoft.AspNetCore.DataProtection;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Journaux structurés : une ligne JSON par événement sur la console (horodatage UTC, niveau, catégorie, message et champs,
+// portée CorrelationId de la requête). Journaux:Format = Texte pour une lecture humaine en local.
+if (!string.Equals(builder.Configuration["Journaux:Format"], "Texte", StringComparison.OrdinalIgnoreCase))
+{
+    builder.Logging.ClearProviders();
+    builder.Logging.AddJsonConsole(options =>
+    {
+        options.IncludeScopes = true;
+        options.UseUtcTimestamp = true;
+        options.TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffZ";
+        // Accents lisibles tels quels (« Requête » et non « Requ\u00EAte ») ; le JSON reste valide.
+        options.JsonWriterOptions = new System.Text.Json.JsonWriterOptions
+        {
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        };
+    });
+}
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlite(builder.Configuration.GetConnectionString("Default")));
+// PostgreSQL : chaîne ConnectionStrings:Default (en Docker, fournie par infra/postgres.env avec le mot de passe).
+// Requêtes SQL de plus de Journaux:SeuilRequeteLenteMs (200 ms) : avertissement dans le journal.
+builder.Services.AddSingleton<RequetesLentesInterceptor>();
+// Pool Npgsql plafonné par instance (BaseDeDonnees:TaillePoolMax, 40 par défaut ; Npgsql en ouvrirait jusqu'à 100) si la chaîne
+// ne fixe pas déjà « Maximum Pool Size » : plusieurs instances × 100 dépasseraient max_connections=100 de PostgreSQL.
+var chaineBase = AppDbContext.AvecPoolParDefaut(builder.Configuration.GetConnectionString("Default")
+        ?? throw new InvalidOperationException("ConnectionStrings:Default (PostgreSQL) n'est pas configurée"),
+    builder.Configuration.GetValue("BaseDeDonnees:TaillePoolMax", AppDbContext.TaillePoolParDefaut));
+builder.Services.AddDbContext<AppDbContext>((services, options) =>
+    AppDbContext.Configurer(options, chaineBase)
+        .AddInterceptors(services.GetRequiredService<RequetesLentesInterceptor>()));
 
 builder.Services.AddScoped<UtilisateurServices>();
 builder.Services.AddScoped<AppartementServices>();
@@ -65,16 +100,68 @@ else
 }
 // Documents PDF (quittances, reçus, contrat, état des lieux).
 builder.Services.AddScoped<DocumentsPdfServices>();
-// Sauvegarde de la base (VACUUM INTO) au démarrage puis toutes les 24 h ; désactivable via Sauvegardes:Actif.
+// Sauvegardes PostgreSQL (pg_dump quotidien) faites par le service compose « sauvegarde-db » : l'API les liste seulement.
 builder.Services.AddSingleton<SauvegardeServices>();
-builder.Services.AddHostedService<SauvegardeBaseService>();
 // Horodatages UTC sérialisés avec « Z » (dates « jour » à minuit inchangées), en HTTP comme dans le hub SignalR.
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.Converters.Add(new ConvertisseurDateUtc()));
-// Compteurs d'essais de connexion / mot de passe oublié, en mémoire (une seule instance de l'API).
+// Fichiers (photos, documents, états des lieux, pièces d'identité) : Stockage:Mode = Disque (défaut, dossier Storage/)
+// ou S3 (MinIO / tout service S3, indispensable avec plusieurs instances). Mêmes clés dans les deux modes.
+var modeStockage = builder.Configuration["Stockage:Mode"] ?? "Disque";
+if (string.Equals(modeStockage, "S3", StringComparison.OrdinalIgnoreCase))
+{
+    var optionsS3 = OptionsStockageS3.Lire(builder.Configuration);
+    builder.Services.AddSingleton<IStockageFichiers>(_ => new StockageS3(optionsS3.CreerClient(), optionsS3.Bucket));
+}
+else if (string.Equals(modeStockage, "Disque", StringComparison.OrdinalIgnoreCase))
+{
+    builder.Services.AddSingleton<IStockageFichiers>(sp =>
+        new StockageDisque(Path.Combine(sp.GetRequiredService<IWebHostEnvironment>().ContentRootPath, "Storage")));
+}
+else
+{
+    throw new InvalidOperationException($"Stockage:Mode « {modeStockage} » inconnu : utilisez Disque ou S3");
+}
+
+// Redis (Redis:Connexion, ex. « redis:6379,password=…,abortConnect=false ») : facultatif. Renseigné, il partage entre les
+// instances le temps réel SignalR, les compteurs de tentatives et le cache du statut des comptes ; vide, l'API fonctionne
+// seule, comme avant (compteurs en mémoire, statut lu en base).
+var connexionRedis = builder.Configuration["Redis:Connexion"];
+var redisActif = !string.IsNullOrWhiteSpace(connexionRedis);
+// Préfixe des clés et canaux Redis (Redis:Prefixe, « immoplus » par défaut) : deux environnements peuvent partager un Redis.
+var prefixeRedis = PrefixeRedis.Lire(builder.Configuration);
 builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<CompteursTentativesMemoire>();
+if (redisActif)
+{
+    builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
+    {
+        var options = ConfigurationOptions.Parse(connexionRedis!);
+        options.AbortOnConnectFail = false; // Redis absent au démarrage : l'API démarre quand même et se reconnecte seule.
+        options.ClientName = $"immoplus-api-{Environment.MachineName}";
+        return ConnectionMultiplexer.Connect(options);
+    });
+    builder.Services.AddSingleton<ICompteursTentatives, CompteursTentativesRedis>();
+    builder.Services.AddSingleton<ICacheStatutUtilisateur, CacheStatutUtilisateurRedis>();
+    builder.Services.AddSingleton<ICacheHotes, CacheHotesRedis>();
+}
+else
+{
+    builder.Services.AddSingleton<ICompteursTentatives>(sp => sp.GetRequiredService<CompteursTentativesMemoire>());
+    builder.Services.AddSingleton<ICacheStatutUtilisateur, CacheStatutUtilisateurBase>();
+    builder.Services.AddSingleton<ICacheHotes, CacheHotesMemoire>();
+}
+// Connexion : 5 échecs par email ou 20 par IP en 15 min ; mot de passe oublié : 5 demandes par email en 15 min.
 builder.Services.AddSingleton<LimiteurTentatives>();
-// Rappels des échéances (mensualités, loyers) au démarrage puis toutes les 24 h ; désactivable via Rappels:Actif.
+// Boîte d'envoi : emails et SMS enregistrés avec l'action métier, envoyés en arrière-plan (nouvelles tentatives).
+builder.Services.AddScoped<BoiteEnvoiServices>();
+builder.Services.AddScoped<EnvoiMessagesServices>();
+builder.Services.AddHostedService<EnvoiMessagesHostedService>();
+// Rappels des échéances (mensualités, loyers) toutes les 24 h, une seule instance à la fois ; désactivable via Rappels:Actif.
 builder.Services.AddHostedService<RappelsHostedService>();
+// Maintenance des réservations et des loyers (expirations, fins de séjour, loyers du mois) toutes les 2 min, par lots bornés,
+// une seule instance à la fois : plus jamais pendant une lecture de liste ou de tableau de bord. Désactivable : Maintenance:Actif.
+builder.Services.AddScoped<MaintenanceServices>();
+builder.Services.AddHostedService<MaintenanceHostedService>();
 
 builder.Services.AddAuthentication(options =>
 {
@@ -107,8 +194,69 @@ builder.Services.AddAuthentication(options =>
         }
     };
 });
-builder.Services.AddSignalR()
+var signalR = builder.Services.AddSignalR()
     .AddJsonProtocol(options => options.PayloadSerializerOptions.Converters.Add(new ConvertisseurDateUtc()));
+if (redisActif)
+{
+    // Backplane : un message poussé par une instance atteint les clients connectés à toutes les autres.
+    signalR.AddStackExchangeRedis(connexionRedis!, options =>
+    {
+        options.Configuration.ChannelPrefix = RedisChannel.Literal($"{prefixeRedis}-signalr");
+        options.Configuration.AbortOnConnectFail = false;
+    });
+}
+
+// Compression des réponses (JSON surtout) : Brotli, sinon Gzip, au niveau le plus rapide (le processeur compte plus que
+// quelques octets). Les photos (JPEG) ne sont pas recompressées. En production, nginx termine le HTTPS et l'API reçoit du HTTP.
+builder.Services.AddResponseCompression(options =>
+{
+    options.Providers.Add<BrotliCompressionProvider>();
+    options.Providers.Add<GzipCompressionProvider>();
+    options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(["application/problem+json"]);
+});
+builder.Services.Configure<BrotliCompressionProviderOptions>(options => options.Level = CompressionLevel.Fastest);
+builder.Services.Configure<GzipCompressionProviderOptions>(options => options.Level = CompressionLevel.Fastest);
+
+// Cache de sortie des listes publiques anonymes (30 s) : en mémoire, ou dans Redis pour qu'il soit partagé et vidé
+// sur toutes les instances à la fois.
+builder.Services.AddOutputCache(CachePublic.Configurer);
+if (redisActif)
+{
+    builder.Services.AddStackExchangeRedisOutputCache(options =>
+    {
+        var configuration = ConfigurationOptions.Parse(connexionRedis!);
+        configuration.AbortOnConnectFail = false;
+        options.ConfigurationOptions = configuration;
+        options.InstanceName = $"{prefixeRedis}-cache:";
+    });
+}
+
+// Santé : /sante/vivant (le processus répond) et /sante/pret (PostgreSQL, Redis s'il est configuré, S3 en mode S3).
+var sante = builder.Services.AddHealthChecks()
+    .AddCheck<SantePostgres>("postgresql", tags: [ReponsesSante.Pret], timeout: TimeSpan.FromSeconds(3));
+if (redisActif)
+{
+    sante.AddCheck<SanteRedis>("redis", tags: [ReponsesSante.Pret], timeout: TimeSpan.FromSeconds(3));
+}
+if (string.Equals(modeStockage, "S3", StringComparison.OrdinalIgnoreCase))
+{
+    sante.AddCheck<SanteStockage>("s3", tags: [ReponsesSante.Pret], timeout: TimeSpan.FromSeconds(3));
+}
+
+// Métriques OpenTelemetry au format Prometheus sur /metriques (accès restreint : voir AccesMetriques) : requêtes HTTP et
+// durées par route (histogrammes → p50/p95/p99), erreurs, connexions SignalR, requêtes SQL (Npgsql), processus (CPU,
+// mémoire, GC) et boîte d'envoi.
+builder.Services.AddSingleton<MetriquesImmoPlus>();
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(ressource => ressource.AddService("immoplus-api", serviceInstanceId: Environment.MachineName))
+    .WithMetrics(metriques => metriques
+        .AddMeter("Microsoft.AspNetCore.Hosting", "Microsoft.AspNetCore.Server.Kestrel", "Microsoft.AspNetCore.Http.Connections",
+            "Microsoft.AspNetCore.Diagnostics", "Npgsql", "System.Runtime", MetriquesImmoPlus.NomCompteur)
+        .AddView("http.server.request.duration", new ExplicitBucketHistogramConfiguration
+        {
+            Boundaries = [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.25, 0.5, 0.75, 1, 1.5, 2.5, 5, 10]
+        })
+        .AddPrometheusExporter());
 
 // Liste d'origines configurable (appsettings) : prête pour un futur client mobile / domaine de prod.
 var originesAutorisees = builder.Configuration.GetSection("Cors:OriginesAutorisees").Get<string[]>() ?? Array.Empty<string>();
@@ -124,17 +272,60 @@ builder.Services.AddCors(options =>
 
 builder.Services.AddAuthorization();
 
+// DataProtection n'est utilisé par rien (jetons JWT signés par Jwt:Cle, pas de cookie, antiforgery désactivé sur les formulaires) :
+// clés éphémères en mémoire, plutôt qu'un trousseau écrit dans le conteneur (non partagé entre instances, avertissements
+// au démarrage). Si un jour une donnée protégée doit survivre à un redémarrage, persister les clés (PostgreSQL ou Redis).
+builder.Services.AddDataProtection().UseEphemeralDataProtectionProvider();
+// Le service de démarrage de DataProtection chargerait quand même le trousseau sur disque (et ses avertissements) : retiré.
+foreach (var demarrage in builder.Services.Where(d => d.ServiceType == typeof(IHostedService)
+             && d.ImplementationType?.FullName == "Microsoft.AspNetCore.DataProtection.Internal.DataProtectionHostedService").ToList())
+{
+    builder.Services.Remove(demarrage);
+}
+
 var app = builder.Build();
 
 // Applique automatiquement les migrations en attente au démarrage (évite une étape manuelle à chaque déploiement).
+// Plusieurs instances démarrées ensemble : EF Core 9+ pose un verrou de migration, une seule les applique.
 using (var scope = app.Services.CreateScope())
 {
     scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate();
 }
+app.Logger.LogInformation("Stockage des fichiers : {Mode}{Detail} ; Redis : {Redis}", modeStockage,
+    string.Equals(modeStockage, "S3", StringComparison.OrdinalIgnoreCase)
+        ? $" (bucket « {builder.Configuration["Stockage:S3:Bucket"]} » sur {builder.Configuration["Stockage:S3:Url"]})" : " (dossier Storage/)",
+    redisActif ? "actif (SignalR, limiteur, cache du statut partagés)" : "désactivé (instance unique)");
 
-// Derrière nginx (même machine), l'adresse du client arrive dans X-Forwarded-For : seule la boucle locale est crue,
-// pour que la limitation des connexions par IP vise le vrai client sans être contournable par un en-tête forgé.
-app.UseForwardedHeaders(new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor });
+// Derrière nginx, l'adresse du client arrive dans X-Forwarded-For : seuls la boucle locale et les réseaux listés dans
+// ProxysDeConfiance:Reseaux (ex. « 172.16.0.0/12 », réseau Docker du répartiteur ; vide par défaut) sont crus, pour que
+// la limitation des connexions par IP vise le vrai client sans être contournable par un en-tête forgé.
+var optionsProxys = new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor };
+foreach (var reseau in builder.Configuration.GetSection("ProxysDeConfiance:Reseaux").Get<string[]>() ?? [])
+{
+    if (!string.IsNullOrWhiteSpace(reseau))
+    {
+        optionsProxys.KnownIPNetworks.Add(System.Net.IPNetwork.Parse(reseau.Trim()));
+    }
+}
+app.UseForwardedHeaders(optionsProxys);
+
+// Identifiant de corrélation (X-Correlation-Id) et une ligne de journal par requête, avant tout le reste.
+app.UseMiddleware<MiddlewareCorrelation>();
+
+// /metriques : jeton (Metriques:Jeton) ou réseau interne uniquement ; 404 pour les autres (rien n'indique que la route existe).
+var jetonMetriques = builder.Configuration["Metriques:Jeton"];
+app.Use(async (contexte, suivant) =>
+{
+    if (contexte.Request.Path.StartsWithSegments(AccesMetriques.Chemin) && !AccesMetriques.Autorise(contexte, jetonMetriques))
+    {
+        contexte.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+    await suivant();
+});
+
+// Pas de compression sur le temps réel SignalR (flux longs et WebSockets).
+app.UseWhen(contexte => !contexte.Request.Path.StartsWithSegments("/hubs"), branche => branche.UseResponseCompression());
 
 app.UseMiddleware<MiddlewareException>();
 
@@ -158,9 +349,9 @@ app.Use(async (contexte, suivant) =>
 {
     if (contexte.User.Identity?.IsAuthenticated == true)
     {
-        var id = contexte.User.ObtenirId();
-        var statut = await contexte.RequestServices.GetRequiredService<AppDbContext>().Utilisateurs
-            .Where(u => u.Id == id).Select(u => (StatutUtilisateur?)u.Statut).FirstOrDefaultAsync();
+        // Avec Redis, statut gardé 30 s et effacé à chaque changement (voir CacheStatutUtilisateurRedis) ; sinon lu en base.
+        var statut = await contexte.RequestServices.GetRequiredService<ICacheStatutUtilisateur>()
+            .LireAsync(contexte.User.ObtenirId(), contexte.RequestServices.GetRequiredService<AppDbContext>());
         if (statut != StatutUtilisateur.Valide)
         {
             contexte.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -173,6 +364,30 @@ app.Use(async (contexte, suivant) =>
     await suivant();
 });
 app.UseAuthorization();
+
+// Une modification réussie de ce qu'affichent les listes publiques vide leur cache (avant l'envoi de la réponse : la
+// relecture qui suit voit déjà la nouvelle version, sur toutes les instances avec Redis).
+app.Use(async (contexte, suivant) =>
+{
+    if (CachePublic.DoitVider(contexte.Request))
+    {
+        contexte.Response.OnStarting(async () =>
+        {
+            if (contexte.Response.StatusCode < 400)
+            {
+                await contexte.RequestServices.GetRequiredService<IOutputCacheStore>().EvictByTagAsync(CachePublic.Etiquette, default);
+            }
+        });
+    }
+    await suivant();
+});
+app.UseOutputCache();
+
+app.MapHealthChecks("/sante/vivant", new HealthCheckOptions { Predicate = _ => false, ResponseWriter = ReponsesSante.EcrireAsync });
+app.MapHealthChecks("/sante/pret", new HealthCheckOptions { Predicate = c => c.Tags.Contains(ReponsesSante.Pret), ResponseWriter = ReponsesSante.EcrireAsync });
+app.MapPrometheusScrapingEndpoint(AccesMetriques.Chemin);
+// Compteur ImmoPlus créé dès le démarrage (la boîte d'envoi est lue à la demande de /metriques).
+app.Services.GetRequiredService<MetriquesImmoPlus>();
 
 // --- Utilisateur ---
 app.MapPost("/utilisateur/inscription", async (InscriptionDto dto, UtilisateurServices services) =>
@@ -259,23 +474,25 @@ app.MapGet("/admin/tableau-de-bord", async (TableauDeBordServices services) =>
 app.MapGet("/admin/sms", async (SmsServices services, int? page, int? taille) =>
     Results.Ok(await services.ListerAsync(page ?? 1, taille ?? 20))).RequireAuthorization(policy => policy.RequireRole("Admin"));
 
+// --- Boîte d'envoi des emails et SMS (admin), du plus récent au plus ancien ; statut : EnAttente, Envoye, Echec ou Abandonne ---
+app.MapGet("/admin/messages-sortants", async (BoiteEnvoiServices services, string? statut, int? page, int? taille) =>
+    Results.Ok(await services.ListerAsync(statut, page ?? 1, taille ?? 20))).RequireAuthorization(policy => policy.RequireRole("Admin"));
+
 // --- Sauvegardes de la base (admin) ---
 app.MapGet("/admin/sauvegardes", (SauvegardeServices services) =>
     Results.Ok(services.Lister())).RequireAuthorization(policy => policy.RequireRole("Admin"));
 
-app.MapPost("/admin/sauvegardes", async (SauvegardeServices services, JournalServices journal, CancellationToken annulation) =>
-{
-    var sauvegarde = await services.CreerAsync(annulation);
-    await journal.EnregistrerAsync("sauvegarde.creer", "Sauvegarde", null, $"Sauvegarde manuelle {sauvegarde.Nom} ({sauvegarde.Taille / 1024} Ko)");
-    return Results.Created($"/admin/sauvegardes/{sauvegarde.Nom}", sauvegarde);
-}).RequireAuthorization(policy => policy.RequireRole("Admin"));
+// Sauvegarde manuelle : plus faite par l'API (pg_dump côté serveur), toujours 409 « Sauvegarde gérée par le serveur ».
+app.MapPost("/admin/sauvegardes", () => Results.Created("", SauvegardeServices.Creer()))
+    .RequireAuthorization(policy => policy.RequireRole("Admin"));
 
-// Nom strictement contrôlé (immoplus-yyyyMMdd-HHmm.db) : aucun autre fichier du serveur ne peut être téléchargé.
+// Nom strictement contrôlé (immoplus-yyyyMMdd-HHmm.dump) : aucun autre fichier du serveur ne peut être téléchargé.
 app.MapGet("/admin/sauvegardes/{nom}", async (string nom, SauvegardeServices services, JournalServices journal) =>
 {
     var chemin = services.Chemin(nom);
     await journal.EnregistrerAsync("sauvegarde.telecharger", "Sauvegarde", null, $"Téléchargement de la sauvegarde {nom}");
-    return Results.File(chemin, "application/vnd.sqlite3", nom);
+    // Format personnalisé pg_dump (-Fc) : à restaurer avec pg_restore (infra/restaurer-postgres.sh).
+    return Results.File(chemin, "application/octet-stream", nom);
 }).RequireAuthorization(policy => policy.RequireRole("Admin"));
 
 // --- Journal des actions (admin), du plus récent au plus ancien ; 200 par page au plus ---
@@ -319,8 +536,9 @@ app.MapPost("/admin/signalements/{id:int}/traiter", async (int id, TraiterSignal
     .RequireAuthorization(policy => policy.RequireRole("Admin"));
 
 // --- Vérification d'identité ---
-app.MapGet("/admin/identites", async (IdentiteServices services, string? statut) =>
-    Results.Ok(await services.ListerAsync(statut))).RequireAuthorization(policy => policy.RequireRole("Admin"));
+// Paginé (page, taille ≤ 100) : en attente d'abord, puis les plus récentes.
+app.MapGet("/admin/identites", async (IdentiteServices services, string? statut, int? page, int? taille) =>
+    Results.Ok(await services.ListerAsync(statut, Pagination.Lire(page, taille)))).RequireAuthorization(policy => policy.RequireRole("Admin"));
 
 // Fichiers privés : admin uniquement, servis en ligne (aperçu) avec le jeton.
 app.MapGet("/admin/identites/{id:int}/fichier/{face}", async (int id, string face, IdentiteServices services) =>
@@ -380,25 +598,44 @@ app.MapDelete("/appartement/photos/{photoId:int}", async (int photoId, PhotoServ
 // Public : les photos illustrent les annonces, visibles sans connexion. Logement supprimé ou hôte désactivé :
 // 404 pour le public, servies au propriétaire et à l'admin qui présentent leur jeton (en-tête Authorization).
 // taille=miniature : version 480 px (JPEG), générée et mise en cache à la première demande.
-app.MapGet("/appartement/photo/{photoId:int}", async (int photoId, string? taille, PhotoServices services, ClaimsPrincipal user) =>
+// Cache : une photo ne change jamais sous le même n° (remplacer = supprimer + ajouter) ; publique → « public, max-age=86400,
+// immutable » + ETag (304 sans relire le stockage) ; protégée (annonce supprimée, hôte désactivé) → « private, no-store ».
+app.MapGet("/appartement/photo/{photoId:int}", async (int photoId, string? taille, PhotoServices services, ClaimsPrincipal user, HttpContext contexte) =>
 {
     var connecte = user.Identity?.IsAuthenticated == true;
     var miniature = string.Equals(taille, "miniature", StringComparison.OrdinalIgnoreCase);
-    var (flux, nomFichier) = await services.OuvrirAsync(photoId, connecte ? user.ObtenirId() : null, connecte ? user.ObtenirRole() : null, miniature);
+    var (photo, protegee) = await services.AccesAsync(photoId, connecte ? user.ObtenirId() : null, connecte ? user.ObtenirRole() : null);
+    var etag = new Microsoft.Net.Http.Headers.EntityTagHeaderValue($"\"photo-{photoId}{(miniature ? "-miniature" : "")}\"");
+    if (protegee)
+    {
+        contexte.Response.Headers.CacheControl = "private, no-store";
+    }
+    else
+    {
+        contexte.Response.Headers.CacheControl = $"public, max-age={(int)PhotoServices.DureeCachePublic.TotalSeconds}, immutable";
+        if (contexte.Request.GetTypedHeaders().IfNoneMatch is { Count: > 0 } attendus && attendus.Any(e => e.Compare(etag, useStrongComparison: false)))
+        {
+            contexte.Response.Headers.ETag = etag.ToString();
+            return Results.StatusCode(StatusCodes.Status304NotModified);
+        }
+    }
+    var (flux, nomFichier) = await services.OuvrirAsync(photo, miniature);
     if (!new FileExtensionContentTypeProvider().TryGetContentType(nomFichier, out var contentType))
     {
         contentType = "application/octet-stream";
     }
-    return Results.File(flux, contentType);
+    return Results.File(flux, contentType, entityTag: protegee ? null : etag);
 });
 
 // Longue durée : loyerMax, chambresMin, avanceMax (mois) ; dates, voyageurs et prixMax sont ignorés pour typeOffre=LongueDuree.
 // Recherche publique : critères optionnels ; arrivee/depart (yyyy-MM-dd) ensemble, equipements en liste séparée par des virgules.
 // nord/sud/est/ouest : bornes de la carte (les 4 ensemble). Token facultatif : le propriétaire et l'admin voient leurs logements en détail.
-// bailleurId : logements d'un seul hôte (mêmes règles de visibilité).
+// bailleurId : logements d'un seul hôte (mêmes règles de visibilité). supprimes=true/false et q (n°, adresse, ville, quartier, bailleur).
+// Paginé : page, taille (20 par défaut, 100 au plus, 200 avec les 4 bornes de la carte), les plus récentes d'abord.
+// Public anonyme : réponse mise en cache 30 s (cache de sortie, vidé à chaque modification d'annonce).
 app.MapGet("/appartement/lister", async (AppartementServices services, ClaimsPrincipal user, string? typeOffre, bool? disponible, string? ville, string? quartier,
     int? voyageurs, string? arrivee, string? depart, string? equipements, decimal? prixMax, double? nord, double? sud, double? est, double? ouest, int? bailleurId,
-    decimal? loyerMax, int? chambresMin, int? avanceMax) =>
+    decimal? loyerMax, int? chambresMin, int? avanceMax, bool? supprimes, string? q, int? page, int? taille) =>
 {
     TypeOffre? filtre = null;
     if (!string.IsNullOrEmpty(typeOffre) && Enum.TryParse<TypeOffre>(typeOffre, true, out var valeur))
@@ -421,12 +658,16 @@ app.MapGet("/appartement/lister", async (AppartementServices services, ClaimsPri
         BailleurId = bailleurId,
         LoyerMax = loyerMax,
         ChambresMin = chambresMin,
-        AvanceMax = avanceMax
+        AvanceMax = avanceMax,
+        Supprimes = supprimes,
+        Q = q
     };
+    var carte = nord is not null && sud is not null && est is not null && ouest is not null;
     var connecte = user.Identity?.IsAuthenticated == true;
     return Results.Ok(await services.ListerAsync(filtre, disponible, recherche,
-        connecte ? user.ObtenirId() : null, connecte ? user.ObtenirRole() : null));
-});
+        connecte ? user.ObtenirId() : null, connecte ? user.ObtenirRole() : null,
+        Pagination.Lire(page, taille, max: carte ? AppartementServices.TailleMaxCarte : Pagination.TailleMax)));
+}).CacheOutput(CachePublic.Annonces);
 
 // Fiche d'un logement (public, token facultatif) : 404 pour le public si l'annonce est supprimée ou l'hôte désactivé.
 app.MapGet("/appartement/{id:int}", async (int id, AppartementServices services, ClaimsPrincipal user) =>
@@ -446,7 +687,7 @@ app.MapGet("/appartement/villes", async (AppartementServices services, string? t
             : throw new InvalidOperationException("typeOffre invalide. Utilisez LongueDuree ou SejourCourt");
     }
     return Results.Ok(await services.ListerVillesAsync(filtre));
-});
+}).CacheOutput(CachePublic.Annonces);
 
 // Public ; un token facultatif du bailleur propriétaire ou d'un admin détaille chaque période (id, motif).
 app.MapGet("/appartement/{id:int}/calendrier", async (int id, string? du, string? au, AppartementServices services, ClaimsPrincipal user) =>
@@ -469,8 +710,9 @@ app.MapDelete("/appartement/indisponibilites/{id:int}", async (int id, Apparteme
 }).RequireAuthorization(policy => policy.RequireRole("Bailleur", "Admin"));
 
 // --- Location (lecture seule : créée en interne via l'acceptation d'une candidature) ---
-app.MapGet("/location/lister", async (LocationServices services, ClaimsPrincipal user) =>
-    Results.Ok(await services.ListerAsync(user.ObtenirId(), user.ObtenirRole()))).RequireAuthorization();
+// Paginé (page, taille ≤ 100), les plus récentes d'abord ; statut (EnCours, Terminee, Resiliee), filtre=AEvaluer, q (n°, nom, adresse).
+app.MapGet("/location/lister", async (LocationServices services, ClaimsPrincipal user, int? page, int? taille, string? statut, string? filtre, string? q) =>
+    Results.Ok(await services.ListerAsync(user.ObtenirId(), user.ObtenirRole(), Pagination.Lire(page, taille), statut, filtre, q))).RequireAuthorization();
 
 // Loyers mensuels sans frais, après la période couverte par l'avance : gérés par l'admin, consultés par le locataire.
 app.MapGet("/location/{id:int}/loyers", async (int id, LoyerServices services, ClaimsPrincipal user) =>
@@ -515,8 +757,10 @@ app.MapPost("/financement/creer", async (FinancementServices services, Financeme
     return Results.Created($"/financement/{financement.Id}", financement);
 }).RequireAuthorization(policy => policy.RequireRole("Admin"));
 
-app.MapGet("/financement/lister", async (FinancementServices services, ClaimsPrincipal user) =>
-    Results.Ok(await services.ListerFinancementLoctions(user.ObtenirId(), user.ObtenirRole()))).RequireAuthorization(policy => policy.RequireRole("Admin", "Locataire"));
+// Paginé (page, taille ≤ 100), les plus récents d'abord ; statut (EnAttenteValidation, EnCours, Solde), q (n° de financement ou de location, nom, adresse).
+app.MapGet("/financement/lister", async (FinancementServices services, ClaimsPrincipal user, int? page, int? taille, string? statut, string? q) =>
+    Results.Ok(await services.ListerFinancementLoctions(user.ObtenirId(), user.ObtenirRole(), Pagination.Lire(page, taille), statut, q)))
+    .RequireAuthorization(policy => policy.RequireRole("Admin", "Locataire"));
 
 app.MapPost("/financement/{id:int}/generer-echeancier", async (int id, MensualiteServices services, JournalServices journal, ClaimsPrincipal user) =>
 {
@@ -564,8 +808,9 @@ app.MapPost("/candidature/creer", async (CandidatureDto dto, CandidatureServices
     return Results.Created($"/candidature/{candidature.Id}", candidature);
 }).RequireAuthorization(policy => policy.RequireRole("Locataire"));
 
-app.MapGet("/candidature/lister", async (CandidatureServices services, ClaimsPrincipal user, int page, int taille) =>
-    Results.Ok(await services.ListerAsync(user.ObtenirId(), user.ObtenirRole(), page, taille))).RequireAuthorization();
+// Paginé (page, taille ≤ 100, facultatifs), les plus récents d'abord ; statut, appartementId, q (n° de dossier, nom, adresse).
+app.MapGet("/candidature/lister", async (CandidatureServices services, ClaimsPrincipal user, int? page, int? taille, string? statut, int? appartementId, string? q) =>
+    Results.Ok(await services.ListerAsync(user.ObtenirId(), user.ObtenirRole(), Pagination.Lire(page, taille), statut, appartementId, q))).RequireAuthorization();
 
 app.MapGet("/candidature/{id:int}", async (int id, CandidatureServices services, ClaimsPrincipal user) =>
     Results.Ok(await services.RechercherAsync(id, user.ObtenirId(), user.ObtenirRole()))).RequireAuthorization();
@@ -659,8 +904,10 @@ app.MapPost("/reservation/creer", async (ReservationDto dto, ReservationServices
 app.MapGet("/reservation/devis", async (int appartementId, string? arrivee, string? depart, int? voyageurs, ReservationServices services) =>
     Results.Ok(await services.DevisAsync(appartementId, DatesJour.Lire(arrivee, "arrivee"), DatesJour.Lire(depart, "depart"), voyageurs)));
 
-app.MapGet("/reservation/lister", async (ReservationServices services, ClaimsPrincipal user) =>
-    Results.Ok(await services.ListerAsync(user.ObtenirId(), user.ObtenirRole()))).RequireAuthorization();
+// Paginé (page, taille ≤ 100) ; filtre (Demandes, Actives, AVenir, AEvaluer, Passees, ARembourser ; tri propre à chaque onglet),
+// statut (exact), q (n° de réservation, nom du voyageur, adresse). Sans filtre : les plus récentes d'abord.
+app.MapGet("/reservation/lister", async (ReservationServices services, ClaimsPrincipal user, int? page, int? taille, string? filtre, string? statut, string? q) =>
+    Results.Ok(await services.ListerAsync(user.ObtenirId(), user.ObtenirRole(), Pagination.Lire(page, taille), filtre, statut, q))).RequireAuthorization();
 
 app.MapGet("/reservation/{id:int}", async (int id, ReservationServices services, ClaimsPrincipal user) =>
     Results.Ok(await services.RechercherAsync(id, user.ObtenirId(), user.ObtenirRole()))).RequireAuthorization();
@@ -705,8 +952,10 @@ app.MapPost("/location/{id:int}/avis", async (int id, CreerAvisDto dto, AvisServ
 app.MapPost("/avis/{id:int}/reponse", async (int id, RepondreAvisDto dto, AvisServices services, ClaimsPrincipal user) =>
     Results.Ok(await services.RepondreAsync(id, dto, user.ObtenirId()))).RequireAuthorization();
 
-app.MapGet("/appartement/{id:int}/avis", async (int id, AvisServices services) =>
-    Results.Ok(await services.ListerParAppartementAsync(id)));
+// Public, paginé (page, taille ≤ 100) ; Moyenne, Nombre et Moyennes portent sur tous les avis. Mis en cache 30 s pour le public.
+// reservationId : seulement l'avis (public) de ce séjour, les moyennes restant celles du logement.
+app.MapGet("/appartement/{id:int}/avis", async (int id, AvisServices services, int? page, int? taille, int? reservationId) =>
+    Results.Ok(await services.ListerParAppartementAsync(id, Pagination.Lire(page, taille), reservationId))).CacheOutput(CachePublic.Annonces);
 
 app.MapGet("/utilisateur/{id:int}/avis", async (int id, AvisServices services, ClaimsPrincipal user) =>
     Results.Ok(await services.ListerParUtilisateurAsync(id, user.ObtenirId(), user.ObtenirRole()))).RequireAuthorization();
@@ -716,8 +965,10 @@ app.MapGet("/utilisateur/{id:int}/profil-public", async (int id, AvisServices se
     Results.Ok(await services.ProfilPublicAsync(id)));
 
 // --- Messagerie voyageur ↔ hôte ---
-app.MapGet("/reservation/{id:int}/messages", async (int id, MessageServices services, ClaimsPrincipal user) =>
-    Results.Ok(await services.ListerAsync(id, user.ObtenirId(), user.ObtenirRole()))).RequireAuthorization();
+// Paginé : page 1 = les messages les plus récents (taille 30 par défaut, 100 au plus), chaque page en ordre chronologique ;
+// avant={id de message} : les messages plus anciens que celui-ci (curseur stable pendant que la conversation avance).
+app.MapGet("/reservation/{id:int}/messages", async (int id, MessageServices services, ClaimsPrincipal user, int? page, int? taille, int? avant) =>
+    Results.Ok(await services.ListerAsync(id, user.ObtenirId(), user.ObtenirRole(), Pagination.Lire(page, taille, defaut: 30), avant))).RequireAuthorization();
 
 app.MapPost("/reservation/{id:int}/messages", async (int id, EnvoyerMessageDto dto, MessageServices services, ClaimsPrincipal user) =>
 {
@@ -725,8 +976,9 @@ app.MapPost("/reservation/{id:int}/messages", async (int id, EnvoyerMessageDto d
     return Results.Created($"/reservation/{id}/messages", message);
 }).RequireAuthorization();
 
-app.MapGet("/messages/non-lus", async (MessageServices services, ClaimsPrincipal user) =>
-    Results.Ok(await services.NonLusAsync(user.ObtenirId()))).RequireAuthorization();
+// filtre facultatif (Demandes, Actives, AVenir, AEvaluer, Passees, ARembourser) : non-lus des seules réservations de cet onglet.
+app.MapGet("/messages/non-lus", async (MessageServices services, ClaimsPrincipal user, string? filtre) =>
+    Results.Ok(await services.NonLusAsync(user.ObtenirId(), user.ObtenirRole(), filtre))).RequireAuthorization();
 
 // Réservation sans réservation instantanée : l'hôte (ou l'admin) accepte ou refuse la demande.
 app.MapPost("/reservation/{id:int}/accepter", async (int id, ReservationServices services, JournalServices journal, ClaimsPrincipal user) =>
@@ -832,8 +1084,9 @@ app.MapDelete("/favoris/{appartementId:int}", async (int appartementId, FavoriSe
     return Results.NoContent();
 }).RequireAuthorization(policy => policy.RequireRole("Locataire", "Bailleur"));
 
-app.MapGet("/favoris", async (FavoriServices services, ClaimsPrincipal user) =>
-    Results.Ok(await services.ListerAsync(user.ObtenirId(), user.ObtenirRole())))
+// Paginé (page, taille ≤ 100), du plus récent au plus ancien ; /favoris/ids reste la liste complète des n° (cœurs des cartes).
+app.MapGet("/favoris", async (FavoriServices services, ClaimsPrincipal user, int? page, int? taille) =>
+    Results.Ok(await services.ListerAsync(user.ObtenirId(), user.ObtenirRole(), Pagination.Lire(page, taille))))
     .RequireAuthorization(policy => policy.RequireRole("Locataire", "Bailleur"));
 
 app.MapGet("/favoris/ids", async (FavoriServices services, ClaimsPrincipal user) =>

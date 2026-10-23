@@ -27,11 +27,11 @@ public class DroitsTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFactory>
         await f.CreateClient().GetAsync($"/reservation/{reservation.Id}").Verifier(HttpStatusCode.Unauthorized);
         await autreLocataire.Client.GetAsync($"/reservation/{reservation.Id}/paiements").Erreur(HttpStatusCode.Conflict);
 
-        Assert.DoesNotContain(await autreLocataire.Client.GetAsync("/reservation/lister").Attendre<List<ReservationResponseDto>>(),
+        Assert.DoesNotContain(await autreLocataire.Client.GetAsync("/reservation/lister").AttendreDonnees<ReservationResponseDto>(),
             r => r.Id == reservation.Id);
-        Assert.DoesNotContain(await autreBailleur.Client.GetAsync("/reservation/lister").Attendre<List<ReservationResponseDto>>(),
+        Assert.DoesNotContain(await autreBailleur.Client.GetAsync("/reservation/lister").AttendreDonnees<ReservationResponseDto>(),
             r => r.Id == reservation.Id);
-        Assert.Contains(await bailleur.Client.GetAsync("/reservation/lister").Attendre<List<ReservationResponseDto>>(),
+        Assert.Contains(await bailleur.Client.GetAsync("/reservation/lister").AttendreDonnees<ReservationResponseDto>(),
             r => r.Id == reservation.Id);
 
         // Avant confirmation, le voyageur ne voit que le quartier et la ville ; l'hôte voit l'adresse exacte.
@@ -69,19 +69,19 @@ public class DroitsTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFactory>
         await bailleur.Client.PostJson(url, new { contenu = "Écrivez à hote@exemple.com" }).Erreur(HttpStatusCode.BadRequest);
 
         // L'admin lit sans marquer comme lu.
-        var lusParAdmin = await admin.Client.GetAsync(url).Attendre<List<MessageDto>>();
+        var lusParAdmin = await admin.Client.GetAsync(url).AttendreDonnees<MessageDto>();
         Assert.Single(lusParAdmin);
         var nonLus = await bailleur.Client.GetAsync("/messages/non-lus").Attendre<MessagesNonLusDto>();
         Assert.Equal(1, nonLus.Total);
         Assert.Contains(nonLus.ParReservation, n => n.ReservationId == reservation.Id && n.Nombre == 1);
 
-        var lusParHote = await bailleur.Client.GetAsync(url).Attendre<List<MessageDto>>();
+        var lusParHote = await bailleur.Client.GetAsync(url).AttendreDonnees<MessageDto>();
         Assert.False(lusParHote[0].DeMoi);
         Assert.Equal(0, (await bailleur.Client.GetAsync("/messages/non-lus").Attendre<MessagesNonLusDto>()).Total);
-        Assert.NotNull((await voyageur.Client.GetAsync(url).Attendre<List<MessageDto>>())[0].DateLecture);
+        Assert.NotNull((await voyageur.Client.GetAsync(url).AttendreDonnees<MessageDto>())[0].DateLecture);
 
         await bailleur.Client.PostJson(url, new { contenu = "Arrivée à partir de 14 h." }).Verifier(HttpStatusCode.Created);
-        Assert.Contains(f.Smtp.EmailsPour(bailleur.Email), e => e.Sujet.Contains($"{reservation.Id:D6}") && e.Sujet.Contains("message", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(await f.EmailsPourAsync(bailleur.Email), e => e.Sujet.Contains($"{reservation.Id:D6}") && e.Sujet.Contains("message", StringComparison.OrdinalIgnoreCase));
 
         // Une fois le séjour payé, les coordonnées passent.
         await admin.Client.PayerReservation(reservation.Id, reservation.MontantTotal).Verifier(HttpStatusCode.OK);
@@ -103,7 +103,7 @@ public class DroitsTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFactory>
             (await db.Reservations.SingleAsync(r => r.Id == reservation.Id)).DateAnnulation = DateTime.UtcNow.AddDays(-31));
         await bailleur.Client.PostJson(url, new { contenu = "Pas de souci." }).Erreur(HttpStatusCode.Conflict);
         // Le fil reste lisible.
-        Assert.Single(await bailleur.Client.GetAsync(url).Attendre<List<MessageDto>>());
+        Assert.Single(await bailleur.Client.GetAsync(url).AttendreDonnees<MessageDto>());
     }
 
     [Fact]

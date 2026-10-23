@@ -7,7 +7,8 @@ import FormulaireAppartement from "../../components/appartements/FormulaireAppar
 import PhotoCouverture from "../../components/appartements/PhotoCouverture";
 import CalendrierLogement from "../../components/sejour/CalendrierLogement";
 import { localisation } from "../../components/sejour/equipements";
-import { Badge, EnTete, EtatListe, MessageErreur, Onglets, Tableau } from "../../components/admin/ui";
+import { Badge, EnTete, EtatListe, MessageErreur, Onglets, Pagination, Tableau } from "../../components/admin/ui";
+import { useListeAOnglets } from "../../components/admin/pagination";
 import {
   classeBoutonDanger,
   classeBoutonPrincipal,
@@ -21,10 +22,38 @@ import type { AppartementDto } from "../../types/models";
 
 type TypeOffre = "LongueDuree" | "SejourCourt";
 
+type Filtre = "Tous" | TypeOffre | "Supprimes";
+const ONGLETS = ["Tous", "LongueDuree", "SejourCourt", "Supprimes"] as const;
+/** Onglet → paramètres de l'API : annonces publiées (supprimes=false) par type, ou supprimées (supprimes=true). */
+const requeteOnglet = (f: Filtre) =>
+  f === "Supprimes" ? "supprimes=true" : f === "Tous" ? "supprimes=false" : `supprimes=false&typeOffre=${f}`;
+const LOCAL = {
+  dansOnglet: (f: Filtre, a: AppartementDto) =>
+    f === "Supprimes" ? !!a.estDesactive : !a.estDesactive && (f === "Tous" || a.typeOffre === f),
+};
+
 export default function Appartements() {
-  const { donnees, setDonnees, chargement, erreur } = useChargement<AppartementDto[]>("appartement/lister");
   const [params, setParams] = useSearchParams();
-  const [filtre, setFiltre] = useState<"Tous" | TypeOffre | "Supprimes">("Tous");
+  const [filtre, setFiltre] = useState<Filtre>("Tous");
+  const idCible = extraireNumero(params.get("q") ?? "");
+  const liste = useListeAOnglets<AppartementDto, Filtre>({
+    base: idCible ? null : "appartement/lister",
+    onglet: filtre,
+    onglets: ONGLETS,
+    requeteOnglet,
+    mode: "pages",
+    local: LOCAL,
+  });
+  // Lien direct (?q=n° d'annonce, depuis le journal ou un signalement) : seule cette annonce est lue et affichée.
+  const cible = useChargement<AppartementDto>(idCible ? `appartement/${idCible}` : null);
+  const { compteurs } = liste;
+  const chargement = idCible ? cible.chargement : liste.chargement;
+  const erreur = idCible ? cible.erreur : liste.erreur;
+  /** Mise à jour locale d'une annonce (suppression, réactivation, modification). */
+  const setDonnees = (maj: (liste: AppartementDto[]) => AppartementDto[]) => {
+    if (idCible) cible.setDonnees((a) => (a ? (maj([a])[0] ?? a) : a));
+    else liste.setElements(maj);
+  };
   // null : formulaire fermé ; "ajout" : nouvel appartement ; sinon l'annonce en cours de modification.
   const [formulaire, setFormulaire] = useState<null | "ajout" | AppartementDto>(null);
   const [avertissement, setAvertissement] = useState<string | null>(null);
@@ -44,7 +73,7 @@ export default function Appartements() {
     setSuppressionEnCours(a.id);
     try {
       await apiClient.delete(`appartement/${a.id}`);
-      setDonnees((liste) => (liste ?? []).map((x) => (x.id === a.id ? { ...x, estDesactive: true } : x)));
+      setDonnees((l) => l.map((x) => (x.id === a.id ? { ...x, estDesactive: true } : x)));
     } catch (err) {
       setErreurSuppression({ id: a.id, message: messageErreur(err, "Impossible de supprimer ce logement.") });
     } finally {
@@ -57,7 +86,7 @@ export default function Appartements() {
     setSuppressionEnCours(a.id);
     try {
       const misAJour = await apiClient.post<AppartementDto>(`appartement/${a.id}/reactiver`);
-      setDonnees((liste) => (liste ?? []).map((x) => (x.id === a.id ? misAJour : x)));
+      setDonnees((l) => l.map((x) => (x.id === a.id ? misAJour : x)));
     } catch (err) {
       setErreurSuppression({ id: a.id, message: messageErreur(err, "Impossible de réactiver ce logement.") });
     } finally {
@@ -65,18 +94,8 @@ export default function Appartements() {
     }
   };
 
-  const appartements = donnees ?? [];
-  const idCible = extraireNumero(params.get("q") ?? "");
-  const actifs = appartements.filter((a) => !a.estDesactive);
-  const supprimes = appartements.filter((a) => a.estDesactive);
-  // Lien direct (?q=n° d'annonce, depuis le journal ou un signalement) : seule cette annonce est affichée.
-  const affiches = idCible
-    ? appartements.filter((a) => a.id === idCible)
-    : filtre === "Supprimes"
-      ? supprimes
-      : filtre === "Tous"
-        ? actifs
-        : actifs.filter((a) => a.typeOffre === filtre);
+  const affiches = idCible ? (cible.donnees ? [cible.donnees] : []) : liste.elements;
+  const nombre = (f: Filtre) => (compteurs[f] !== undefined ? ` (${compteurs[f]})` : "");
 
   return (
     <>
@@ -100,9 +119,7 @@ export default function Appartements() {
           onAnnuler={() => setFormulaire(null)}
           onEnregistre={(a, avertissementPhotos) => {
             setAvertissement(avertissementPhotos ?? null);
-            setDonnees((liste) =>
-              formulaire === "ajout" ? [...(liste ?? []), a] : (liste ?? []).map((x) => (x.id === a.id ? a : x)),
-            );
+            setDonnees((l) => (formulaire === "ajout" ? [a, ...l] : l.map((x) => (x.id === a.id ? a : x))));
             setFormulaire(null);
           }}
         />
@@ -136,10 +153,10 @@ export default function Appartements() {
           if (idCible) setParams({});
         }}
         options={[
-          { valeur: "Tous", label: `Publiés (${actifs.length})` },
-          { valeur: "LongueDuree", label: "Longue durée" },
-          { valeur: "SejourCourt", label: "Séjour court" },
-          { valeur: "Supprimes", label: `Supprimés (${supprimes.length})` },
+          { valeur: "Tous", label: `Publiés${nombre("Tous")}` },
+          { valeur: "LongueDuree", label: `Longue durée${nombre("LongueDuree")}` },
+          { valeur: "SejourCourt", label: `Séjour court${nombre("SejourCourt")}` },
+          { valeur: "Supprimes", label: `Supprimés${nombre("Supprimes")}` },
         ]}
       />
 
@@ -267,6 +284,9 @@ export default function Appartements() {
             </Fragment>
           ))}
         </Tableau>
+        {!idCible && (
+          <Pagination page={liste.page} totalPages={liste.totalPages} onChange={liste.setPage} total={liste.total} />
+        )}
       </EtatListe>
     </>
   );

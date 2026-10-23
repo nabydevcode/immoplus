@@ -59,29 +59,32 @@ public class TableauDeBordHoteServices
 
         var dto = new TableauDeBordHoteDto { Annee = an };
 
-        // --- Revenus : paiements encaissés dans l'année (montants additionnés en mémoire : decimal sous SQLite) ---
+        // --- Revenus : paiements encaissés dans l'année, additionnés par mois en SQL ---
         var sejours = await _context.Paiements.AsNoTracking()
             .Where(p => p.ReservationId != null && p.Reservation!.Appartement!.BailleurId == bailleurId
                 && p.DatePaiement >= debutAnnee && p.DatePaiement < finAnnee)
-            .Select(p => new { p.DatePaiement.Month, p.Montant })
-            .ToListAsync();
+            .GroupBy(p => p.DatePaiement.Month)
+            .Select(g => new { Mois = g.Key, Total = g.Sum(p => p.Montant) })
+            .ToDictionaryAsync(g => g.Mois, g => g.Total);
         var loyers = await _context.Paiements.AsNoTracking()
             .Where(p => p.LoyerId != null && p.Loyer!.Location!.Appartement!.BailleurId == bailleurId
                 && p.DatePaiement >= debutAnnee && p.DatePaiement < finAnnee)
-            .Select(p => new { p.DatePaiement.Month, p.Montant })
-            .ToListAsync();
+            .GroupBy(p => p.DatePaiement.Month)
+            .Select(g => new { Mois = g.Key, Total = g.Sum(p => p.Montant) })
+            .ToDictionaryAsync(g => g.Mois, g => g.Total);
         // Remboursements versés aux voyageurs (séjours annulés), au mois du dernier remboursement : déduits des revenus.
         var remboursements = await _context.Reservations.AsNoTracking()
             .Where(r => r.Appartement!.BailleurId == bailleurId && r.MontantRembourse != null && r.DateRemboursement != null
                 && r.DateRemboursement >= debutAnnee && r.DateRemboursement < finAnnee)
-            .Select(r => new { r.DateRemboursement!.Value.Month, Montant = r.MontantRembourse!.Value })
-            .ToListAsync();
+            .GroupBy(r => r.DateRemboursement!.Value.Month)
+            .Select(g => new { Mois = g.Key, Total = g.Sum(r => r.MontantRembourse!.Value) })
+            .ToDictionaryAsync(g => g.Mois, g => g.Total);
         dto.RevenusParMois = Enumerable.Range(1, 12).Select(mois => new RevenusMoisDto
         {
             Mois = mois,
-            Sejours = sejours.Where(p => p.Month == mois).Sum(p => p.Montant),
-            Loyers = loyers.Where(p => p.Month == mois).Sum(p => p.Montant),
-            Remboursements = remboursements.Where(r => r.Month == mois).Sum(r => r.Montant)
+            Sejours = sejours.GetValueOrDefault(mois),
+            Loyers = loyers.GetValueOrDefault(mois),
+            Remboursements = remboursements.GetValueOrDefault(mois)
         }).ToList();
         dto.RemboursementsTotal = dto.RevenusParMois.Sum(m => m.Remboursements);
         dto.RevenusTotal = dto.RevenusParMois.Sum(m => m.Sejours + m.Loyers) - dto.RemboursementsTotal;
@@ -147,7 +150,7 @@ public class TableauDeBordHoteServices
 
         dto.DemandesEnAttente = await _context.Reservations.CountAsync(r =>
             r.Appartement!.BailleurId == bailleurId && r.Statut == StatutReservation.DemandeEnvoyee);
-        dto.MessagesNonLus = (await _messageServices.NonLusAsync(bailleurId)).Total;
+        dto.MessagesNonLus = (await _messageServices.NonLusAsync(bailleurId, RoleUtilisateur.Bailleur)).Total;
 
         var hote = (await _avisServices.StatistiquesHotesAsync([bailleurId])).GetValueOrDefault(bailleurId);
         if (hote is not null)

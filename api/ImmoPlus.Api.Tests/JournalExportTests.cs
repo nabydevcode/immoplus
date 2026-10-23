@@ -39,7 +39,7 @@ public class JournalExportTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFacto
         var recherche = await admin.Client.GetAsync($"/admin/journal?q=fraude&du={Api.Jour(0)}&au={Api.Jour(0)}&taille=1")
             .Attendre<PagedResultDto<JournalActionDto>>();
         Assert.Equal(1, recherche.TotalElements);
-        Assert.Empty((await admin.Client.GetAsync($"/admin/journal?q=fraude&du={Api.Jour(1)}").Attendre<PagedResultDto<JournalActionDto>>()).Donnees);
+        Assert.Empty(await admin.Client.GetAsync($"/admin/journal?q=fraude&du={Api.Jour(1)}").AttendreDonnees<JournalActionDto>());
         var tout = await admin.Client.GetAsync("/admin/journal?taille=200").Attendre<PagedResultDto<JournalActionDto>>();
         Assert.Equal(tout.Donnees.OrderByDescending(j => j.Date).ThenByDescending(j => j.Id).Select(j => j.Id), tout.Donnees.Select(j => j.Id));
         await admin.Client.GetAsync("/admin/journal?du=14-10-2026").Verifier(HttpStatusCode.BadRequest);

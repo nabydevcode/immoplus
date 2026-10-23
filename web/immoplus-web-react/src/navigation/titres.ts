@@ -28,6 +28,7 @@ const TITRES: [string, string][] = [
   ["/admin/financements", "Financements · Admin"],
   ["/admin/reservations", "Réservations · Admin"],
   ["/admin/sms", "SMS envoyés · Admin"],
+  ["/admin/messages-sortants", "Messages sortants · Admin"],
   ["/admin/sauvegardes", "Sauvegardes · Admin"],
   ["/admin/identites", "Identités · Admin"],
   ["/admin/signalements", "Signalements · Admin"],

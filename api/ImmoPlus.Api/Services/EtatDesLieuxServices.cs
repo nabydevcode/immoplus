@@ -20,15 +20,18 @@ public class EtatDesLieuxServices
     private static readonly string[] ExtensionsAutorisees = [".jpg", ".jpeg", ".png", ".webp"];
 
     private readonly AppDbContext _context;
-    private readonly IWebHostEnvironment _environnement;
+    private readonly IStockageFichiers _stockage;
+    private readonly ILogger<EtatDesLieuxServices> _logger;
 
-    public EtatDesLieuxServices(AppDbContext context, IWebHostEnvironment environnement)
+    public EtatDesLieuxServices(AppDbContext context, IStockageFichiers stockage, ILogger<EtatDesLieuxServices> logger)
     {
         _context = context;
-        _environnement = environnement;
+        _stockage = stockage;
+        _logger = logger;
     }
 
-    public string DossierRacine => Path.Combine(_environnement.ContentRootPath, "Storage", "etats-des-lieux");
+    /// <summary>Clé du fichier : « etats-des-lieux/{reservationId}/{guid}.jpg » (Chemin relatif à « etats-des-lieux/ »).</summary>
+    public static string Cle(PhotoEtatDesLieux photo) => ClesStockage.Cle(ClesStockage.EtatsDesLieux, photo.Chemin);
 
     public async Task<PhotoEtatDesLieuxDto> AjouterAsync(int reservationId, IFormFile? fichier, string? moment, string? commentaire, int utilisateurId)
     {
@@ -89,19 +92,21 @@ public class EtatDesLieuxServices
         }
 
         // Photo allégée (JPEG 1600 px, sans EXIF ni position GPS) : l'original envoyé n'est pas conservé.
-        var nomStocke = $"{Guid.NewGuid()}.jpg";
+        var chemin = $"{reservationId}/{Guid.NewGuid()}.jpg";
+        byte[] jpeg;
         await using (var source = fichier.OpenReadStream())
         using (var image = await TraitementImages.ChargerAsync(source, TraitementImages.TailleMaxEtatDesLieux))
         {
-            await TraitementImages.EnregistrerJpegAsync(image, Path.Combine(DossierRacine, reservationId.ToString(), nomStocke));
+            jpeg = TraitementImages.Jpeg(image);
         }
+        await _stockage.EnregistrerAsync(ClesStockage.Cle(ClesStockage.EtatsDesLieux, chemin), new MemoryStream(jpeg), "image/jpeg");
 
         var photo = new PhotoEtatDesLieux
         {
             ReservationId = reservationId,
             Moment = momentLu,
             AuteurId = utilisateurId,
-            Chemin = Path.Combine(reservationId.ToString(), nomStocke),
+            Chemin = chemin,
             Commentaire = texte,
             DateCreation = DateTime.UtcNow
         };
@@ -128,12 +133,8 @@ public class EtatDesLieuxServices
         var photo = await _context.PhotosEtatDesLieux.AsNoTracking().FirstOrDefaultAsync(p => p.Id == photoId)
             ?? throw new NotFoundException("Cette photo n'existe pas");
         await VerifierAccesAsync(photo.ReservationId, utilisateurId, role);
-        var chemin = Path.Combine(DossierRacine, photo.Chemin);
-        if (!File.Exists(chemin))
-        {
-            throw new NotFoundException("Cette photo n'existe pas");
-        }
-        return (new FileStream(chemin, FileMode.Open, FileAccess.Read), Path.GetFileName(photo.Chemin));
+        var flux = await _stockage.OuvrirAsync(Cle(photo)) ?? throw new NotFoundException("Cette photo n'existe pas");
+        return (flux, Path.GetFileName(photo.Chemin.Replace('\\', '/')));
     }
 
     /// <summary>L'auteur peut retirer sa photo dans les 24 h (erreur de prise de vue) ; ensuite elle fait foi.</summary>
@@ -152,10 +153,14 @@ public class EtatDesLieuxServices
         _context.PhotosEtatDesLieux.Remove(photo);
         await _context.SaveChangesAsync();
 
-        var chemin = Path.Combine(DossierRacine, photo.Chemin);
-        if (File.Exists(chemin))
+        try
         {
-            File.Delete(chemin);
+            await _stockage.SupprimerAsync(Cle(photo));
+        }
+        catch (Exception ex)
+        {
+            // La photo n'est plus référencée : un fichier orphelin ne gêne personne, la suppression reste réussie.
+            _logger.LogWarning(ex, "Fichier de la photo d'état des lieux {Id} non supprimé", photo.Id);
         }
     }
 

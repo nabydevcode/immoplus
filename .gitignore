@@ -35,3 +35,9 @@ api/ImmoPlus.Api/Storage/identites/
 
 # Réglages privés de la passerelle SMS
 api/ImmoPlus.Api/sms.env
+
+# Secrets locaux (PostgreSQL, Garage/S3, Redis, profil echelle) — modèles versionnés : infra/*.env.exemple
+infra/*.env
+
+# Résultats des tests de charge k6 (résumés, relevés, comptes de test)
+infra/charge/resultats/

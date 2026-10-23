@@ -104,12 +104,14 @@ public class FinancementServices
         return (mensualite, totalDu - mensualite * (nombreMensualites - 1));
     }
 
-    public async Task<List<FinancementLocationResponseDto>> ListerFinancementLoctions(int utilisateurId, RoleUtilisateur role)
+    /// <summary>
+    /// Financements visibles (locataire : les siens ; admin : tous), paginés, les plus récents d'abord (n° décroissant).
+    /// statut : EnAttenteValidation, EnCours ou Solde. q : n° de financement ou de location, nom du locataire ou adresse.
+    /// </summary>
+    public async Task<PagedResultDto<FinancementLocationResponseDto>> ListerFinancementLoctions(int utilisateurId, RoleUtilisateur role,
+        Pagination pagination, string? statut = null, string? q = null)
     {
-        var requete = _context.FinancementLocations.AsNoTracking()
-            .Include(f => f.Location).ThenInclude(l => l!.Locataire)
-            .Include(f => f.Location).ThenInclude(l => l!.Appartement)
-            .AsQueryable();
+        var requete = _context.FinancementLocations.AsNoTracking().AsQueryable();
 
         if (role == RoleUtilisateur.Locataire)
         {
@@ -119,9 +121,32 @@ public class FinancementServices
         {
             requete = requete.Where(f => f.Location!.Appartement!.BailleurId == utilisateurId);
         }
+        if (!string.IsNullOrWhiteSpace(statut))
+        {
+            if (int.TryParse(statut, out _) || !Enum.TryParse<StatutFinancement>(statut.Trim(), true, out var s) || !Enum.IsDefined(s))
+            {
+                throw new InvalidOperationException("Statut invalide. Utilisez EnAttenteValidation, EnCours ou Solde");
+            }
+            requete = requete.Where(f => f.Statut == s);
+        }
+        if (!string.IsNullOrWhiteSpace(q))
+        {
+            var numero = RechercheTexte.Reference(q);
+            var motif = RechercheTexte.Contient(q);
+            requete = requete.Where(f => f.Id == numero || f.LocationId == numero
+                || EF.Functions.ILike(AppDbContext.SansAccents(f.Location!.Locataire!.Nom), AppDbContext.SansAccents(motif))
+                || EF.Functions.ILike(AppDbContext.SansAccents(f.Location!.Appartement!.Adresse), AppDbContext.SansAccents(motif)));
+        }
 
-        var financements = await requete.Include(f => f.Mensualites).ThenInclude(m => m.Paiements).ToListAsync();
-        return financements.Select(VersDto).ToList();
+        // Échéancier et paiements chargés pour la seule page (bilan des retards), en requêtes séparées (pas de produit cartésien).
+        var (financements, total) = await requete
+            .OrderByDescending(f => f.Id)
+            .Include(f => f.Location).ThenInclude(l => l!.Locataire)
+            .Include(f => f.Location).ThenInclude(l => l!.Appartement)
+            .Include(f => f.Mensualites).ThenInclude(m => m.Paiements)
+            .AsSplitQuery()
+            .PageAsync(pagination);
+        return PagedResultDto<FinancementLocationResponseDto>.Creer(financements.Select(VersDto).ToList(), pagination, total);
     }
 
     private static FinancementLocationResponseDto VersDto(FinancementLocation f)

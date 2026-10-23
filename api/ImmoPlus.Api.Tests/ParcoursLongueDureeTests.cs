@@ -48,13 +48,16 @@ public class ParcoursLongueDureeTests(ImmoPlusFactory f) : IClassFixture<ImmoPlu
         var bailleur = await f.BailleurAsync();
         var locataire = await f.LocataireAsync();
         var autreCandidat = await f.LocataireAsync();
-        var logement = await bailleur.LongueDureeAsync(Loyer, DureeAvance);
+        // Loyer choisi pour que l'échéancier tombe sur des décimales (vérifie l'arrondi au franc).
+        const decimal loyer = 1_000_010m;
+        var logement = await bailleur.LongueDureeAsync(loyer, DureeAvance);
 
-        // --- Candidatures : apport minimum de 2 mois de loyer, une seule candidature ouverte par logement.
-        await Candidater(autreCandidat, logement.Id, 1_999_999m).Erreur(HttpStatusCode.BadRequest);
-        var dossier = await Candidater(locataire, logement.Id, 2_499_999m).Attendre<CandidatureResponseDto>(HttpStatusCode.Created);
+        // --- Candidatures : apport fixé par la plateforme (2 mois de loyer), le montant envoyé est ignoré ;
+        // une seule candidature ouverte par logement.
+        var dossier = await Candidater(locataire, logement.Id, 1m).Attendre<CandidatureResponseDto>(HttpStatusCode.Created);
+        Assert.Equal(2 * loyer, dossier.ApportInitial);
         Assert.Equal("EnAttente", dossier.Statut);
-        Assert.Contains(f.Smtp.EmailsPour(locataire.Email), e => e.Sujet.Contains($"Dossier n° {dossier.Id:D6}"));
+        Assert.Contains(await f.EmailsPourAsync(locataire.Email), e => e.Sujet.Contains($"Dossier n° {dossier.Id:D6}"));
         await Candidater(locataire, logement.Id, 3_000_000m).Erreur(HttpStatusCode.Conflict);
         var autreDossier = await Candidater(autreCandidat, logement.Id, 3_000_000m).Attendre<CandidatureResponseDto>(HttpStatusCode.Created);
 
@@ -75,16 +78,16 @@ public class ParcoursLongueDureeTests(ImmoPlusFactory f) : IClassFixture<ImmoPlu
         var financementId = accepte.FinancementLocationId!.Value;
         Assert.Equal("ListeAttente", (await autreCandidat.Client.GetAsync($"/candidature/{autreDossier.Id}").Attendre<CandidatureResponseDto>()).Statut);
 
-        var financement = (await locataire.Client.GetAsync("/financement/lister").Attendre<List<FinancementLocationResponseDto>>()).Single();
+        var financement = (await locataire.Client.GetAsync("/financement/lister").AttendreDonnees<FinancementLocationResponseDto>()).Single();
         Assert.Equal(financementId, financement.Id);
-        Assert.Equal(6_000_000m, financement.MontantTotal);
-        Assert.Equal(3_500_001m, financement.MontantARembourser);
+        Assert.Equal(6 * loyer, financement.MontantTotal);
+        Assert.Equal(4 * loyer, financement.MontantARembourser);
         Assert.Equal(0.03m, financement.TauxFrais);
         Assert.Equal(4, financement.NombreMensualites);
-        Assert.Equal(901_250m, financement.MontantMensualite);
+        Assert.Equal(1_030_010m, financement.MontantMensualite);
         Assert.Equal("EnAttenteValidation", financement.Statut);
         await bailleur.Client.GetAsync("/financement/lister").Verifier(HttpStatusCode.Forbidden);
-        Assert.Empty(await autreCandidat.Client.GetAsync("/financement/lister").Attendre<List<FinancementLocationResponseDto>>());
+        Assert.Empty(await autreCandidat.Client.GetAsync("/financement/lister").AttendreDonnees<FinancementLocationResponseDto>());
 
         // --- Apport puis remise des clés (admin uniquement, dans cet ordre).
         var dateApport = Api.Aujourdhui.AddMonths(-8);
@@ -109,12 +112,12 @@ public class ParcoursLongueDureeTests(ImmoPlusFactory f) : IClassFixture<ImmoPlu
         Assert.Equal(dateApport, remise.DateRemiseCles!.Value.Date);
 
         // --- Échéancier : arrondi au franc, la dernière mensualité absorbe l'écart.
-        // 3 500 001 × 1,03 = 3 605 001,03 → 3 605 001 ; / 4 = 901 250,25 → 901 250 ; dernière = 901 251.
+        // 4 000 040 × 1,03 = 4 120 041,2 → 4 120 041 ; / 4 = 1 030 010,25 → 1 030 010 ; dernière = 1 030 011.
         await admin.Client.PostJson($"/financement/{financementId}/generer-echeancier").Verifier(HttpStatusCode.NoContent);
         await admin.Client.PostJson($"/financement/{financementId}/generer-echeancier").Erreur(HttpStatusCode.Conflict);
         var mensualites = await locataire.Client.GetAsync($"/financement/{financementId}/mensualites").Attendre<List<MensualiteResponseDto>>();
-        Assert.Equal(new[] { 901_250m, 901_250m, 901_250m, 901_251m }, mensualites.Select(m => m.MontantDu));
-        Assert.Equal(3_605_001m, mensualites.Sum(m => m.MontantDu));
+        Assert.Equal(new[] { 1_030_010m, 1_030_010m, 1_030_010m, 1_030_011m }, mensualites.Select(m => m.MontantDu));
+        Assert.Equal(4_120_041m, mensualites.Sum(m => m.MontantDu));
         Assert.All(mensualites, m => Assert.Equal(0m, m.MontantDu % 1));
         Assert.Equal(Enumerable.Range(0, 4).Select(i => Api.Aujourdhui.AddMonths(i)), mensualites.Select(m => m.DateEcheance.Date));
         await autreCandidat.Client.GetAsync($"/financement/{financementId}/mensualites").Erreur(HttpStatusCode.Conflict);
@@ -122,22 +125,22 @@ public class ParcoursLongueDureeTests(ImmoPlusFactory f) : IClassFixture<ImmoPlu
         // Paiement d'une mensualité : pas au-delà du reste dû, et seulement par l'admin.
         var premiere = mensualites[0];
         object Mensualite(decimal montant) => new { mensualiteId = premiere.Id, montant, datePaiement = Api.Jour(0), modePaiement = "Espèces" };
-        await admin.Client.PostJson("/paiement/enregistrer", Mensualite(901_251m)).Erreur(HttpStatusCode.BadRequest);
-        await bailleur.Client.PostJson("/paiement/enregistrer", Mensualite(901_250m)).Erreur(HttpStatusCode.Conflict);
-        await admin.Client.PostJson("/paiement/enregistrer", Mensualite(901_250m)).Verifier(HttpStatusCode.OK);
+        await admin.Client.PostJson("/paiement/enregistrer", Mensualite(1_030_011m)).Erreur(HttpStatusCode.BadRequest);
+        await bailleur.Client.PostJson("/paiement/enregistrer", Mensualite(1_030_010m)).Erreur(HttpStatusCode.Conflict);
+        await admin.Client.PostJson("/paiement/enregistrer", Mensualite(1_030_010m)).Verifier(HttpStatusCode.OK);
         await admin.Client.PostJson("/paiement/enregistrer", Mensualite(1m)).Erreur(HttpStatusCode.Conflict);
 
         // --- Loyers : sans frais, à partir de la fin de la période couverte par l'avance (remise des clés + 6 mois).
         var debutLoyers = dateApport.AddMonths(DureeAvance);
         var loyers = await locataire.Client.GetAsync($"/location/{locationId}/loyers").Attendre<LoyersLocationDto>();
         Assert.Equal(debutLoyers, loyers.DebutLoyers!.Value.Date);
-        Assert.Equal(Loyer, loyers.LoyerMensuel);
+        Assert.Equal(loyer, loyers.LoyerMensuel);
         Assert.NotEmpty(loyers.Loyers);
         Assert.Equal(debutLoyers, loyers.Loyers[0].DateEcheance.Date);
         Assert.Equal(Enumerable.Range(1, loyers.Loyers.Count), loyers.Loyers.Select(l => l.Numero));
         Assert.All(loyers.Loyers, l =>
         {
-            Assert.Equal(Loyer, l.MontantDu);
+            Assert.Equal(loyer, l.MontantDu);
             Assert.InRange(l.DateEcheance.Date, debutLoyers, Api.Aujourdhui.AddMonths(1));
         });
         Assert.Equal(debutLoyers.AddMonths(loyers.Loyers.Count - 1), loyers.Loyers[^1].DateEcheance.Date);
@@ -163,7 +166,7 @@ public class ParcoursLongueDureeTests(ImmoPlusFactory f) : IClassFixture<ImmoPlu
         var solde = await admin.Client.PostJson($"/financement/{financementId}/solder", new { modePaiement = "Virement", datePaiement = Api.Jour(0) })
             .Attendre<Dictionary<string, int>>();
         Assert.Equal(3, solde["mensualitesSoldees"]);
-        Assert.Equal("Solde", (await locataire.Client.GetAsync("/financement/lister").Attendre<List<FinancementLocationResponseDto>>()).Single().Statut);
+        Assert.Equal("Solde", (await locataire.Client.GetAsync("/financement/lister").AttendreDonnees<FinancementLocationResponseDto>()).Single().Statut);
 
         var impayes = (await admin.Client.GetAsync($"/location/{locationId}/loyers").Attendre<LoyersLocationDto>()).Loyers
             .Where(l => l.DateEcheance.Date < Api.Aujourdhui && l.MontantPaye < l.MontantDu).ToList();
@@ -171,11 +174,11 @@ public class ParcoursLongueDureeTests(ImmoPlusFactory f) : IClassFixture<ImmoPlu
         var refus = await admin.Client.PostJson($"/location/{locationId}/terminer").Erreur(HttpStatusCode.Conflict);
         Assert.Contains("impayé", refus);
 
-        await admin.Client.PostJson("/paiement/enregistrer", new { loyerId = impayes[0].Id, montant = Loyer + 1, datePaiement = Api.Jour(0), modePaiement = "Espèces" })
+        await admin.Client.PostJson("/paiement/enregistrer", new { loyerId = impayes[0].Id, montant = loyer + 1, datePaiement = Api.Jour(0), modePaiement = "Espèces" })
             .Erreur(HttpStatusCode.BadRequest);
-        foreach (var loyer in impayes)
+        foreach (var impaye in impayes)
         {
-            await admin.Client.PostJson("/paiement/enregistrer", new { loyerId = loyer.Id, montant = Loyer, datePaiement = Api.Jour(0), modePaiement = "Espèces" })
+            await admin.Client.PostJson("/paiement/enregistrer", new { loyerId = impaye.Id, montant = loyer, datePaiement = Api.Jour(0), modePaiement = "Espèces" })
                 .Verifier(HttpStatusCode.OK);
         }
 
@@ -224,11 +227,11 @@ public class ParcoursLongueDureeTests(ImmoPlusFactory f) : IClassFixture<ImmoPlu
         await VisiteEffectueeSurDossierExistantAsync(bailleur, candidats[2], dossiers[2].Id);
         await admin.Client.PostJson($"/candidature/{dossiers[2].Id}/accepter", new { tauxFrais = 0.06m }).Erreur(HttpStatusCode.Conflict);
         var accepte = await admin.Client.PostJson($"/candidature/{dossiers[2].Id}/accepter", new { tauxFrais = 0.05m }).Attendre<CandidatureResponseDto>();
-        var financement = (await candidats[2].Client.GetAsync("/financement/lister").Attendre<List<FinancementLocationResponseDto>>()).Single();
+        var financement = (await candidats[2].Client.GetAsync("/financement/lister").AttendreDonnees<FinancementLocationResponseDto>()).Single();
         Assert.Equal(accepte.FinancementLocationId, financement.Id);
         Assert.Equal(0.05m, financement.TauxFrais);
-        // 3 000 000 × 1,05 = 3 150 000 sur 3 mensualités.
-        Assert.Equal(3, financement.NombreMensualites);
+        // Apport fixé à 2 mois : 4 000 000 × 1,05 = 4 200 000 sur 4 mensualités.
+        Assert.Equal(4, financement.NombreMensualites);
         Assert.Equal(1_050_000m, financement.MontantMensualite);
         // Logement attribué : plus de nouvelle visite.
         await bailleur.Client.PostJson($"/candidature/{dossiers[3].Id}/visite", new { dateHeure = DateTime.UtcNow.AddDays(2) }).Erreur(HttpStatusCode.Conflict);

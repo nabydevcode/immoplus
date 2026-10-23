@@ -22,6 +22,7 @@ public class MensualiteServices
     {
         // Double clic : la seconde génération attend la première, puis voit l'échéancier existant (409) au lieu de le dupliquer.
         await using var transaction = await _context.Database.BeginTransactionAsync();
+        await _context.Database.VerrouillerAsync(RessourceVerrouillee.Financement, financementLocationId);
         var financement = await ChargerAvecAutorisationAsync(financementLocationId, utilisateurId, role);
         if (financement.Location!.DateApportPaye is null)
         {

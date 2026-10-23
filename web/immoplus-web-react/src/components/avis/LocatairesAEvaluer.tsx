@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Star } from "lucide-react";
-import type { LocationDto } from "../../types/models";
+import type { LocationDto, PagedResultDto } from "../../types/models";
+import { avecPage, listeDe, TAILLE_MAX } from "../admin/pagination";
 import { formaterReference, useChargement } from "../admin/outils";
 import { jourLocal } from "../sejour/dates";
 import AvisLocation from "./AvisLocation";
@@ -8,11 +9,15 @@ import { avisBailleurPossible } from "./locations";
 
 /** Bailleur : locations longue durée dont il peut évaluer le locataire (après la fin, ou après 6 mois). */
 export default function LocatairesAEvaluer() {
-  const { donnees, recharger } = useChargement<LocationDto[]>("location/lister");
+  // Locations du bailleur (100 au plus, les plus récentes) ; filtre=AEvaluer demandé à l'API.
+  const { donnees: reponse, recharger } = useChargement<PagedResultDto<LocationDto> | LocationDto[]>(
+    avecPage("location/lister?filtre=AEvaluer", 1, TAILLE_MAX),
+  );
+  const donnees = listeDe(reponse);
   const [aujourdhui] = useState(jourLocal);
   // Liste figée au premier affichage : un avis envoyé reste confirmé à sa place jusqu'au prochain chargement.
   const [affichees, setAffichees] = useState<number[] | null>(null);
-  const aEvaluer = (donnees ?? []).filter((l) => affichees?.includes(l.id) ?? avisBailleurPossible(l, aujourdhui));
+  const aEvaluer = donnees.filter((l) => affichees?.includes(l.id) ?? avisBailleurPossible(l, aujourdhui));
   if (aEvaluer.length === 0) return null;
 
   return (

@@ -17,6 +17,7 @@ import {
 } from "../../components/admin/outils";
 import type { AppartementDto, CandidatureDto, PagedResultDto } from "../../types/models";
 import { useLienConnexion } from "../../hooks/useLienConnexion";
+import { avecPage, listeDe, TAILLE_MAX } from "../../components/admin/pagination";
 
 const statuts = {
   EnAttente: { label: "À étudier", classe: "bg-amber-100 text-amber-700" },
@@ -37,8 +38,9 @@ export default function CandidaturesRecues() {
   const candidatures = useChargement<PagedResultDto<CandidatureDto>>(
     estBailleur ? "candidature/lister?page=1&taille=100" : null,
   );
-  const appartements = useChargement<AppartementDto[]>(
-    estBailleur ? `appartement/lister?bailleurId=${utilisateurId}` : null,
+  // Logements du bailleur (100 au plus) : loyer, avance et état de location affichés sur chaque groupe.
+  const appartements = useChargement<PagedResultDto<AppartementDto> | AppartementDto[]>(
+    estBailleur ? avecPage(`appartement/lister?bailleurId=${utilisateurId}`, 1, TAILLE_MAX) : null,
   );
   const [filtre, setFiltre] = useState<Filtre>("EnAttente");
   const [ouverte, setOuverte] = useState<number | null>(null);
@@ -73,8 +75,12 @@ export default function CandidaturesRecues() {
           ? enListeAttente
           : toutes);
   const nbPreselectionnes = (appartementId: number) => enVisite.filter((c) => c.appartementId === appartementId).length;
-  const mesAppartements = (appartements.donnees ?? []).filter((a) => a.bailleurId === utilisateurId);
-  const appartementDe = (id: number) => appartements.donnees?.find((a) => a.id === id);
+  const listeAppartements = listeDe(appartements.donnees);
+  const nombreAppartements =
+    appartements.donnees && !Array.isArray(appartements.donnees)
+      ? appartements.donnees.totalElements
+      : listeAppartements.filter((a) => a.bailleurId === utilisateurId).length;
+  const appartementDe = (id: number) => listeAppartements.find((a) => a.id === id);
 
   // Regroupement par appartement pour comparer les candidats d'un même logement.
   const groupes = new Map<number, CandidatureDto[]>();
@@ -110,7 +116,7 @@ export default function CandidaturesRecues() {
       <div className="max-w-6xl mx-auto">
         <h1 className="text-2xl md:text-3xl font-extrabold mb-1">Candidatures reçues</h1>
         <p className="text-gray-500 text-sm mb-6">
-          Étudiez les dossiers déposés sur vos {mesAppartements.length} logement(s) et décidez de les accepter ou non.
+          Étudiez les dossiers déposés sur vos {nombreAppartements} logement(s) et décidez de les accepter ou non.
         </p>
 
         <LocatairesAEvaluer />

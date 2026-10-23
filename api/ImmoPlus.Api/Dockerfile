@@ -4,9 +4,9 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0
 
 WORKDIR /src
 
-# sqlite3 pour inspecter/modifier la base depuis le conteneur (docker compose exec api sqlite3 immoplus.db).
-# Ne jamais écrire dans immoplus.db depuis macOS pendant que l'API tourne : le mode WAL de SQLite
-# ne se synchronise pas à travers le montage Docker et la base se corrompt.
+# La base est PostgreSQL (service compose « postgres » ; psql : docker compose exec postgres psql -U immoplus immoplus).
+# sqlite3 reste installé pour lire l'ancienne base SQLite conservée pour mémoire (immoplus.db, à ne jamais modifier) :
+# copie cohérente avec docker compose exec -T api sqlite3 immoplus.db ".backup '/src/copie.db'".
 RUN apt-get update && apt-get install -y --no-install-recommends sqlite3 && rm -rf /var/lib/apt/lists/*
 
 ENV ASPNETCORE_URLS=http://+:5107 \

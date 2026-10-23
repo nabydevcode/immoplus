@@ -61,7 +61,6 @@ export default function Candidater() {
   const lienConnexion = useLienConnexion();
   const { appartement, chargement, erreur: erreurChargement } = useAppartement(id);
 
-  const [apport, setApport] = useState("");
   const [situation, setSituation] = useState("CDI");
   const [avecGarant, setAvecGarant] = useState(false);
   const [garant, setGarant] = useState({ nom: "", telephone: "", email: "", situationProfessionnelle: "CDI" });
@@ -111,10 +110,10 @@ export default function Candidater() {
   const loyer = appartement.loyerMensuel ?? 0;
   const dureeAvance = appartement.dureeAvanceExigee ?? 0;
   const avanceExigee = loyer * dureeAvance;
-  const apportMinimum = Math.min(loyer * 2, avanceExigee);
-  const apportSaisi = Number(apport) || 0;
-  const montantFinance = Math.max(avanceExigee - apportSaisi, 0);
-  const nombreMensualites = Math.max(dureeAvance - Math.floor(apportSaisi / (loyer || 1)), 0);
+  // Apport fixé par la plateforme (même règle que l'API) : 2 mois de loyer, ou toute l'avance si elle est plus courte.
+  const apport = Math.min(loyer * 2, avanceExigee);
+  const montantFinance = Math.max(avanceExigee - apport, 0);
+  const nombreMensualites = Math.max(dureeAvance - Math.floor(apport / (loyer || 1)), 0);
 
   const modifierPiece = (cle: number, modif: Partial<PieceJointe>) =>
     setPieces((liste) => liste.map((p) => (p.cle === cle ? { ...p, ...modif } : p)));
@@ -139,10 +138,6 @@ export default function Candidater() {
     e.preventDefault();
     setErreur(null);
 
-    if (apportSaisi < apportMinimum) {
-      setErreur(`L'apport initial doit être d'au moins ${montant(apportMinimum)} (2 mois de loyer).`);
-      return;
-    }
     if (avecGarant && (!garant.nom.trim() || !garant.telephone.trim())) {
       setErreur("Renseignez au moins le nom et le téléphone du garant.");
       return;
@@ -152,7 +147,7 @@ export default function Candidater() {
     try {
       const candidature = await apiClient.post<{ id: number }>("candidature/creer", {
         appartementId: appartement.id,
-        apportInitial: apportSaisi,
+        apportInitial: apport,
         situationProfessionnelle: situation,
         garant: avecGarant
           ? {
@@ -249,22 +244,15 @@ export default function Candidater() {
           <form onSubmit={soumettre} className="lg:col-span-2 flex flex-col gap-6">
             <section className="bg-white rounded-2xl shadow-sm border border-black/5 p-6 flex flex-col gap-4">
               <h2 className="font-bold">Ma situation</h2>
-              <label className="text-sm font-medium text-gray-700">
-                Apport que vous verserez (GNF)
-                <input
-                  type="number"
-                  min={0}
-                  value={apport}
-                  onChange={(e) => setApport(e.target.value)}
-                  placeholder={String(apportMinimum)}
-                  className={classeChamp}
-                />
-                <span className="block text-xs text-gray-500 mt-1.5 font-normal">
-                  Montant que vous vous engagez à verser si le logement vous est attribué, après la visite (minimum{" "}
-                  {montant(apportMinimum)}). Rien n'est à payer maintenant. Le reste de l'avance peut être financé et
-                  remboursé en mensualités.
-                </span>
-              </label>
+              <div className="text-sm">
+                <p className="font-medium text-gray-700">Apport à verser</p>
+                <p className="mt-1 text-lg font-extrabold">{montant(apport)}</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  {apport < avanceExigee ? "2 mois de loyer, " : "L'avance entière, "}à verser seulement si le logement
+                  vous est attribué, après la visite. Rien n'est à payer maintenant.
+                  {montantFinance > 0 && " Le reste de l'avance est financé et remboursé en mensualités."}
+                </p>
+              </div>
               <label className="text-sm font-medium text-gray-700">
                 Situation professionnelle
                 <select value={situation} onChange={(e) => setSituation(e.target.value)} className={classeChamp}>
@@ -443,12 +431,12 @@ export default function Candidater() {
             </div>
             <div className="flex justify-between">
               <span className="text-gray-500">Votre apport</span>
-              <span className="font-semibold">{montant(apportSaisi)}</span>
+              <span className="font-semibold">{montant(apport)}</span>
             </div>
             <hr className="border-black/10" />
-            {apportSaisi >= avanceExigee && apportSaisi > 0 ? (
+            {apport >= avanceExigee ? (
               <p className="text-green-700">Votre apport couvre toute l'avance : aucun financement nécessaire.</p>
-            ) : apportSaisi >= apportMinimum ? (
+            ) : (
               <>
                 <div className="flex justify-between">
                   <span className="text-gray-500">Montant à financer</span>
@@ -464,10 +452,6 @@ export default function Candidater() {
                   Estimation avec 3 % de frais. Le taux final (2 à 5 %) est fixé à l'acceptation.
                 </p>
               </>
-            ) : (
-              <p className="text-gray-500">
-                Saisissez un apport d'au moins {montant(apportMinimum)} pour voir la simulation.
-              </p>
             )}
             <div className="border-t border-black/10 pt-4 mt-2">
               <h2 className="font-bold mb-3">Les étapes</h2>

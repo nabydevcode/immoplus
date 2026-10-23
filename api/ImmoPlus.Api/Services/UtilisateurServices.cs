@@ -23,12 +23,16 @@ public class UtilisateurServices
     private readonly LimiteurTentatives _limiteur;
     private readonly LiensFrontend _liens;
     private readonly JournalServices _journal;
+    private readonly BoiteEnvoiServices _boite;
+    private readonly ICacheStatutUtilisateur _cacheStatut;
 
     public UtilisateurServices(AppDbContext context, TokenServices tokenServices, EmailServices emailServices,
         IHostEnvironment environment, ILogger<UtilisateurServices> logger,
         NotificationServices notificationServices, ReservationServices reservationServices, LimiteurTentatives limiteur,
-        LiensFrontend liens, JournalServices journal)
+        LiensFrontend liens, JournalServices journal, BoiteEnvoiServices boite, ICacheStatutUtilisateur cacheStatut)
     {
+        _boite = boite;
+        _cacheStatut = cacheStatut;
         _journal = journal;
         _liens = liens;
         _notificationServices = notificationServices;
@@ -90,6 +94,22 @@ public class UtilisateurServices
         return identite;
     }
 
+    /// <summary>
+    /// Enregistrement d'un compte créé ou modifié : deux inscriptions simultanées avec le même email passent le contrôle
+    /// préalable, mais l'index unique sur lower(Email) n'en accepte qu'une ; l'autre reçoit le même 409.
+    /// </summary>
+    private async Task EnregistrerCompteAsync()
+    {
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (ErreursBase.EstViolationUnicite(ex, ErreursBase.IndexEmailUnique))
+        {
+            throw new ConflictException("Un utilisateur avec cet email existe déjà");
+        }
+    }
+
     public async Task<UtilisateurResponseDto> InscrireAsync(InscriptionDto dto)
     {
         var (nom, telephone, email) = await VerifierNouveauCompteAsync(dto.Nom, dto.Telephone, dto.Email, dto.MotDePasse);
@@ -121,7 +141,7 @@ public class UtilisateurServices
         };
 
         await _context.Utilisateurs.AddAsync(utilisateur);
-        await _context.SaveChangesAsync();
+        await EnregistrerCompteAsync();
 
         return VersDto(utilisateur);
     }
@@ -141,7 +161,7 @@ public class UtilisateurServices
             DateCreation = DateTime.UtcNow
         };
         await _context.Utilisateurs.AddAsync(admin);
-        await _context.SaveChangesAsync();
+        await EnregistrerCompteAsync();
         await _notificationServices.BienvenueAdminAsync(admin);
         await _journal.EnregistrerAsync("utilisateur.creer-admin", "Utilisateur", admin.Id, $"Compte administrateur créé pour {admin.Nom} ({admin.Email})");
         return VersDto(admin);
@@ -150,7 +170,7 @@ public class UtilisateurServices
     public async Task DemanderReinitialisationAsync(MotDePasseOublieDto dto)
     {
         // Au-delà de 5 demandes en 15 min pour un même email : même réponse, mais plus aucun email (anti-spam de la boîte du destinataire).
-        if (!_limiteur.AutoriserReinitialisation(dto.Email))
+        if (!await _limiteur.AutoriserReinitialisationAsync(dto.Email))
         {
             _logger.LogWarning("Trop de demandes de réinitialisation pour un même email : demande ignorée");
             return;
@@ -166,29 +186,26 @@ public class UtilisateurServices
         var jeton = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         utilisateur.JetonReinitialisationHash = HacherJeton(jeton);
         utilisateur.JetonReinitialisationExpiration = DateTime.UtcNow.Add(DureeValiditeJeton);
-        await _context.SaveChangesAsync();
 
         var lien = $"{_liens.Url}/reinitialiser-mot-de-passe?jeton={jeton}";
 
         if (_emailServices.EstConfigure)
         {
-            try
-            {
-                await _emailServices.EnvoyerAsync(utilisateur.Email, "Réinitialisation de votre mot de passe ImmoPlus",
-                    $"""
-                    <p>Bonjour {System.Net.WebUtility.HtmlEncode(utilisateur.Nom)},</p>
-                    <p>Vous avez demandé à réinitialiser votre mot de passe ImmoPlus.</p>
-                    <p><a href="{lien}">Choisir un nouveau mot de passe</a></p>
-                    <p>Ce lien est valable 1 heure. Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.</p>
-                    """);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Échec de l'envoi de l'email de réinitialisation à {Email}", utilisateur.Email);
-                throw new InvalidOperationException("L'email n'a pas pu être envoyé. Réessayez plus tard");
-            }
+            // Jeton et email (boîte d'envoi) enregistrés ensemble ; l'envoi part en arrière-plan avec nouvelles tentatives.
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+            await _context.SaveChangesAsync();
+            await _boite.AjouterEmailAsync(utilisateur.Email, utilisateur.Id, "Réinitialisation de votre mot de passe ImmoPlus",
+                $"""
+                <p>Bonjour {System.Net.WebUtility.HtmlEncode(utilisateur.Nom)},</p>
+                <p>Vous avez demandé à réinitialiser votre mot de passe ImmoPlus.</p>
+                <p><a href="{lien}">Choisir un nouveau mot de passe</a></p>
+                <p>Ce lien est valable 1 heure. Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.</p>
+                """, "ReinitialisationMotDePasse", null);
+            await transaction.CommitAsync();
+            return;
         }
-        else if (_environment.IsDevelopment())
+        await _context.SaveChangesAsync();
+        if (_environment.IsDevelopment())
         {
             _logger.LogWarning("SMTP non configuré, lien de réinitialisation pour {Email} : {Lien}", utilisateur.Email, lien);
         }
@@ -224,11 +241,11 @@ public class UtilisateurServices
     /// <param name="adresseIp">Adresse du client (limitation des essais par IP).</param>
     public async Task<UtilisateurResponseDto> ConnexionAsync(ConnexionDto dto, string? adresseIp = null)
     {
-        _limiteur.VerifierConnexion(dto.Email, adresseIp);
+        await _limiteur.VerifierConnexionAsync(dto.Email, adresseIp);
         var utilisateur = await TrouverParEmailAsync(dto.Email);
         if (utilisateur is null || string.IsNullOrEmpty(dto.MotDePasse) || !BCrypt.Net.BCrypt.Verify(dto.MotDePasse, utilisateur.MotDePasseHash))
         {
-            _limiteur.EnregistrerEchecConnexion(dto.Email, adresseIp);
+            await _limiteur.EnregistrerEchecConnexionAsync(dto.Email, adresseIp);
             // Jamais le mot de passe : seulement l'email saisi (tronqué) et la raison.
             var emailSaisi = (dto.Email ?? "").Trim();
             await _journal.EnregistrerPourAsync(utilisateur?.Id, utilisateur?.Nom ?? "Visiteur", utilisateur?.Role.ToString() ?? "Anonyme",
@@ -236,7 +253,7 @@ public class UtilisateurServices
                 $"Échec de connexion pour « {(emailSaisi.Length > 200 ? emailSaisi[..200] : emailSaisi)} » ({(utilisateur is null ? "email inconnu" : "mot de passe incorrect")})");
             throw new NotFoundException("Email ou mot de passe incorrect");
         }
-        _limiteur.ReinitialiserConnexion(dto.Email);
+        await _limiteur.ReinitialiserConnexionAsync(dto.Email);
 
         if (utilisateur.Statut != StatutUtilisateur.Valide)
         {
@@ -288,6 +305,7 @@ public class UtilisateurServices
         }
         utilisateur.Statut = StatutUtilisateur.Valide;
         await _context.SaveChangesAsync();
+        await _cacheStatut.InvaliderAsync(utilisateur.Id);
         await _notificationServices.CompteValideAsync(utilisateur);
         await _journal.EnregistrerAsync("utilisateur.valider", "Utilisateur", id, $"Compte de {utilisateur.Nom} ({utilisateur.Email}, {utilisateur.Role}) validé");
 
@@ -308,6 +326,7 @@ public class UtilisateurServices
         }
         utilisateur.Statut = StatutUtilisateur.Refuse;
         await _context.SaveChangesAsync();
+        await _cacheStatut.InvaliderAsync(utilisateur.Id);
         await _journal.EnregistrerAsync("utilisateur.refuser", "Utilisateur", id, $"Inscription de {utilisateur.Nom} ({utilisateur.Email}) refusée");
 
         return VersDto(utilisateur);
@@ -341,6 +360,8 @@ public class UtilisateurServices
         utilisateur.MotifDesactivation = motif;
         utilisateur.DateDesactivation = DateTime.UtcNow;
         await _context.SaveChangesAsync();
+        // Sessions coupées tout de suite sur toutes les instances (cache du statut effacé).
+        await _cacheStatut.InvaliderAsync(utilisateur.Id);
         await _notificationServices.CompteDesactiveAsync(utilisateur, motif);
 
         var dto = VersDto(utilisateur);
@@ -369,6 +390,7 @@ public class UtilisateurServices
         utilisateur.MotifDesactivation = null;
         utilisateur.DateDesactivation = null;
         await _context.SaveChangesAsync();
+        await _cacheStatut.InvaliderAsync(utilisateur.Id);
         await _notificationServices.CompteReactiveAsync(utilisateur);
         await _journal.EnregistrerAsync("utilisateur.reactiver", "Utilisateur", id, $"Compte de {utilisateur.Nom} ({utilisateur.Email}) réactivé");
         return VersDto(utilisateur);
@@ -400,8 +422,11 @@ public class UtilisateurServices
         }
         if (!string.IsNullOrWhiteSpace(recherche))
         {
-            var texte = recherche.Trim().ToLower();
-            requete = requete.Where(u => u.Nom.ToLower().Contains(texte) || u.Email.ToLower().Contains(texte) || u.Telephone.Contains(texte));
+            // Sans casse ni accents (« eloise » trouve « Éloïse »).
+            var motif = RechercheTexte.Contient(recherche);
+            // Index trigrammes sur le nom (sans accents), l'email et le téléphone (migration IndexEtPerformances).
+            requete = requete.Where(u => EF.Functions.ILike(AppDbContext.SansAccents(u.Nom), AppDbContext.SansAccents(motif))
+                || EF.Functions.ILike(u.Email, motif) || EF.Functions.ILike(u.Telephone, motif));
         }
 
         var totalElements = await requete.CountAsync();
@@ -475,7 +500,7 @@ public class UtilisateurServices
         {
             utilisateur.NotificationsSms = sms;
         }
-        await _context.SaveChangesAsync();
+        await EnregistrerCompteAsync();
         return VersDto(utilisateur);
     }
 

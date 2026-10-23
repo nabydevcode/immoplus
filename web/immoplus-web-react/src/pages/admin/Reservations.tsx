@@ -5,14 +5,14 @@ import FormulairePaiement from "../../components/admin/FormulairePaiement";
 import FormulaireRemboursement from "../../components/admin/FormulaireRemboursement";
 import { ChampRecherche } from "../../components/candidatures/RechercheCandidature";
 import { filtrerRecherche } from "../../components/candidatures/recherche";
-import { Badge, EnTete, EtatListe, Onglets, Tableau } from "../../components/admin/ui";
+import { Badge, EnTete, EtatListe, Onglets, Pagination, Tableau } from "../../components/admin/ui";
+import { texteRecherche, useListeAOnglets, useValeurDifferee } from "../../components/admin/pagination";
 import {
   classeBoutonDanger,
   classeBoutonSecondaire,
   formaterDate,
   formaterMontant,
   formaterReference,
-  useChargement,
 } from "../../components/admin/outils";
 import type { ReservationDto } from "../../types/models";
 import ReponseDemande from "../../components/sejour/ReponseDemande";
@@ -33,37 +33,53 @@ import { etatDesLieuxPdf } from "../../components/documents/pdf";
 
 type Volet = "paiement" | "reponse" | "messages" | "remboursement" | "annulation" | "documents";
 
+type Filtre = "Demandes" | "Actives" | "ARembourser" | "Toutes";
+const ONGLETS = ["Demandes", "Actives", "ARembourser", "Toutes"] as const;
+/** Onglet → paramètre de l'API (reservation/lister?filtre=…). */
+const requeteOnglet = (f: Filtre) => (f === "Toutes" ? "" : `filtre=${f}`);
+const LOCAL = {
+  dansOnglet: (f: Filtre, r: ReservationDto) =>
+    f === "Demandes"
+      ? r.statut === "DemandeEnvoyee"
+      : f === "Actives"
+        ? estActive(r)
+        : f === "ARembourser"
+          ? r.statut === "Annulee" && resteARembourser(r) > 0
+          : true,
+  // Recherche (tous statuts) : par n° de réservation, nom du locataire ou adresse.
+  rechercher: (liste: ReservationDto[], texte: string) =>
+    filtrerRecherche(
+      liste,
+      texte,
+      (r) => [r.id],
+      (r) => [r.locataireNom, r.appartementAdresse],
+    ) ?? liste,
+};
+
 export default function Reservations() {
-  const { donnees, chargement, erreur, recharger } = useChargement<ReservationDto[]>("reservation/lister");
-  const [filtre, setFiltre] = useState<"Demandes" | "Actives" | "ARembourser" | "Toutes">("Actives");
+  const [filtre, setFiltre] = useState<Filtre>("Actives");
   // Ligne dépliée : paiement, réponse à une demande, messages, remboursement ou annulation.
   const [ouvert, setOuvert] = useState<{ id: number; volet: Volet } | null>(null);
   const basculer = (id: number, volet: Volet) =>
     setOuvert(ouvert?.id === id && ouvert.volet === volet ? null : { id, volet });
-
-  const reservations = donnees ?? [];
-  const actives = reservations.filter(estActive);
-  const demandes = reservations.filter((r) => r.statut === "DemandeEnvoyee");
-  const aRembourser = reservations.filter((r) => r.statut === "Annulee" && resteARembourser(r) > 0);
   // Lien direct (?q=référence, depuis le tableau de bord) : la page s'ouvre filtrée sur la réservation.
   const [params] = useSearchParams();
   const [recherche, setRecherche] = useState(params.get("q") ?? "");
-  // Recherche (tous statuts) : par n° de réservation, nom du locataire ou adresse.
-  const resultats = filtrerRecherche(
-    reservations,
-    recherche,
-    (r) => [r.id],
-    (r) => [r.locataireNom, r.appartementAdresse],
-  );
-  const affichees =
-    resultats ??
-    (filtre === "Demandes"
-      ? demandes
-      : filtre === "Actives"
-        ? actives
-        : filtre === "ARembourser"
-          ? aRembourser
-          : reservations);
+  // Recherche côté serveur (q : n° de réservation, nom du locataire ou adresse), après une courte pause de saisie.
+  const rechercheEnvoyee = useValeurDifferee(texteRecherche(recherche));
+  const liste = useListeAOnglets<ReservationDto, Filtre>({
+    base: "reservation/lister",
+    onglet: filtre,
+    onglets: ONGLETS,
+    requeteOnglet,
+    recherche: rechercheEnvoyee,
+    mode: "pages",
+    local: LOCAL,
+  });
+  const { chargement, erreur, recharger, compteurs } = liste;
+  const enRecherche = rechercheEnvoyee !== "";
+  const affichees = liste.elements;
+  const nombre = (f: Filtre) => (compteurs[f] !== undefined ? ` (${compteurs[f]})` : "");
   const fermerEtRecharger = () => {
     setOuvert(null);
     recharger();
@@ -84,15 +100,15 @@ export default function Reservations() {
           libelle="Rechercher une réservation"
         />
       </form>
-      {!resultats && (
+      {!enRecherche && (
         <Onglets
           valeur={filtre}
           onChange={setFiltre}
           options={[
-            { valeur: "Demandes", label: `Demandes (${demandes.length})` },
-            { valeur: "Actives", label: `Actives (${actives.length})` },
-            { valeur: "ARembourser", label: `À rembourser (${aRembourser.length})` },
-            { valeur: "Toutes", label: `Toutes (${reservations.length})` },
+            { valeur: "Demandes", label: `Demandes${nombre("Demandes")}` },
+            { valeur: "Actives", label: `Actives${nombre("Actives")}` },
+            { valeur: "ARembourser", label: `À rembourser${nombre("ARembourser")}` },
+            { valeur: "Toutes", label: `Toutes${nombre("Toutes")}` },
           ]}
         />
       )}
@@ -100,7 +116,7 @@ export default function Reservations() {
         chargement={chargement}
         erreur={erreur}
         vide={affichees.length === 0}
-        messageVide={resultats ? "Aucune réservation ne correspond à cette recherche." : "Aucune réservation."}
+        messageVide={enRecherche ? "Aucune réservation ne correspond à cette recherche." : "Aucune réservation."}
       >
         <Tableau entetes={["N°", "Locataire", "Appartement", "Séjour", "Montant", "Payé", "Statut", ""]}>
           {affichees.map((r) => {
@@ -290,6 +306,7 @@ export default function Reservations() {
             );
           })}
         </Tableau>
+        <Pagination page={liste.page} totalPages={liste.totalPages} onChange={liste.setPage} total={liste.total} />
       </EtatListe>
     </>
   );

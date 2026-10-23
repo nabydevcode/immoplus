@@ -14,7 +14,8 @@ import Echeancier from "../admin/Echeancier";
 import { formaterJour, jourLocal } from "../sejour/dates";
 import Loyers from "../financement/Loyers";
 import FinLocation from "../financement/FinLocation";
-import type { CandidatureDto, FinancementDto } from "../../types/models";
+import type { CandidatureDto, FinancementDto, PagedResultDto } from "../../types/models";
+import { avecPage, listeDe, TAILLE_MAX } from "../admin/pagination";
 import BoutonPdf from "../documents/BoutonPdf";
 import { contratLocation } from "../documents/pdf";
 
@@ -77,8 +78,13 @@ export default function SuiviAttribution({
   const apportPaye = !!candidature.dateApportPaye;
   const clesRemises = !!candidature.dateRemiseCles;
   // Étape 4 (si l'avance est financée) : échéancier puis paiements des mensualités, validés par le bailleur.
-  const financements = useChargement<FinancementDto[]>(candidature.financementLocationId ? "financement/lister" : null);
-  const financement = financements.donnees?.find((f) => f.id === candidature.financementLocationId);
+  // Recherche par référence (q) : le financement est retrouvé quelle que soit sa page.
+  const financements = useChargement<PagedResultDto<FinancementDto> | FinancementDto[]>(
+    candidature.financementLocationId
+      ? avecPage(`financement/lister?q=${candidature.financementLocationId}`, 1, TAILLE_MAX)
+      : null,
+  );
+  const financement = listeDe(financements.donnees).find((f) => f.id === candidature.financementLocationId);
   const visite = candidature.visites?.find((v) => v.statut === "Effectuee");
 
   return (

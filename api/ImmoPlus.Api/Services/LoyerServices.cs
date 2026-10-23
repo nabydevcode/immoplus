@@ -25,20 +25,49 @@ public class LoyerServices
         location.DateRemiseCles is null ? null : location.DateDebut.Date.AddMonths(appartement.DureeAvanceExigee ?? 0);
 
     /// <summary>
-    /// Crée les loyers manquants de toutes les locations en cours (utilisé par les rappels automatiques,
-    /// pour qu'un loyer soit rappelé même si personne n'a consulté la location).
+    /// Crée les loyers manquants de toutes les locations en cours (rappels quotidiens), pour qu'un loyer soit rappelé et
+    /// compté dans les retards même si personne n'a consulté la location. Par lots, comme la maintenance planifiée.
     /// </summary>
     public async Task GarantirLoyersLocationsEnCoursAsync(CancellationToken annulation = default)
     {
+        var apresId = 0;
+        while (true)
+        {
+            var lot = await GarantirLoyersLotAsync(apresId, 200, annulation);
+            if (lot.Lues < 200)
+            {
+                return;
+            }
+            apresId = lot.DernierId;
+        }
+    }
+
+    /// <summary>
+    /// Un lot de locations en cours sans loyer à jour, de n° supérieur à <paramref name="apresId"/> (curseur : une location
+    /// dont les loyers ne peuvent pas encore commencer ne bloque pas les suivantes).
+    /// </summary>
+    public async Task<ReservationServices.Lot> GarantirLoyersLotAsync(int apresId, int taille, CancellationToken annulation = default)
+    {
+        // Une location dont un loyer tombe après « limite − 1 mois + 3 jours » est à jour : le suivant (≥ 28 jours plus tard)
+        // dépasserait la limite (le mois prochain). Seules les autres sont chargées.
+        var dejaAJour = DateTime.UtcNow.Date.AddMonths(1).AddMonths(-1).AddDays(3);
         var locations = await _context.Locations
             .Include(l => l.Appartement)
             .Include(l => l.Loyers)
-            .Where(l => l.Statut == StatutLocation.EnCours && l.DateRemiseCles != null)
+            .Where(l => l.Id > apresId && l.Statut == StatutLocation.EnCours && l.DateRemiseCles != null
+                && !l.Loyers.Any(x => x.DateEcheance > dejaAJour))
+            .OrderBy(l => l.Id)
+            .Take(taille)
+            .AsSplitQuery()
             .ToListAsync(annulation);
+        var crees = 0;
         foreach (var location in locations)
         {
+            var avant = location.Loyers.Count;
             await GarantirLoyersAsync(location);
+            crees += location.Loyers.Count > avant ? 1 : 0;
         }
+        return new ReservationServices.Lot(locations.Count, locations.Count == 0 ? apresId : locations[^1].Id, crees);
     }
 
     /// <summary>

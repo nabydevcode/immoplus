@@ -34,8 +34,13 @@ public partial class MessageServices
         _hub = hub;
     }
 
-    /// <summary>Fil de la conversation (ordre chronologique) ; les messages reçus par l'appelant passent en lus.</summary>
-    public async Task<List<MessageDto>> ListerAsync(int reservationId, int utilisateurId, RoleUtilisateur role)
+    /// <summary>
+    /// Fil de la conversation par pages : la page 1 contient les messages les plus récents, la page 2 les précédents, etc.
+    /// (ou, avec <paramref name="avantId"/>, les messages plus anciens que ce message) ; chaque page est renvoyée dans l'ordre
+    /// chronologique. À la lecture de la page la plus récente, TOUS les messages reçus par l'appelant passent en lus.
+    /// </summary>
+    public async Task<PagedResultDto<MessageDto>> ListerAsync(int reservationId, int utilisateurId, RoleUtilisateur role,
+        Pagination pagination, int? avantId = null)
     {
         var reservation = await ChargerAsync(reservationId);
         var participant = EstParticipant(reservation, utilisateurId);
@@ -44,28 +49,48 @@ public partial class MessageServices
             throw new ConflictException("Vous n'avez pas accès à cette conversation");
         }
 
-        var messages = await _context.Messages
-            .Include(m => m.Auteur)
-            .Where(m => m.ReservationId == reservationId)
-            .OrderBy(m => m.DateEnvoi).ThenBy(m => m.Id)
-            .ToListAsync();
-
-        if (participant)
+        if (participant && avantId is null && pagination.Page == 1)
         {
-            var maintenant = DateTime.UtcNow;
-            var nonLus = messages.Where(m => m.AuteurId != utilisateurId && m.DateLecture is null).ToList();
-            nonLus.ForEach(m => m.DateLecture = maintenant);
-            if (nonLus.Count > 0)
-            {
-                await _context.SaveChangesAsync();
-                // Accusé de lecture instantané chez l'auteur, et pastille des non lus à jour chez le lecteur (autres onglets).
-                var lecture = new { reservationId, lecteurId = utilisateurId, dateLecture = maintenant };
-                var auteurs = nonLus.Select(m => m.AuteurId.ToString()).Distinct().Append(utilisateurId.ToString()).ToList();
-                await _hub.Clients.Users(auteurs).SendAsync("messagesLus", lecture);
-                await _hub.Clients.Group(MessagesHub.GroupeAdmins).SendAsync("messagesLus", lecture);
-            }
+            await MarquerLusAsync(reservationId, utilisateurId);
         }
-        return messages.Select(m => VersDto(m, utilisateurId)).ToList();
+
+        var requete = _context.Messages.AsNoTracking().Where(m => m.ReservationId == reservationId);
+        if (avantId is not null)
+        {
+            // Curseur : indépendant des messages arrivés entre-temps (une page « 2 » glisserait d'autant).
+            requete = requete.Where(m => m.Id < avantId);
+            pagination = pagination with { Page = 1 };
+        }
+        // Id croissant = ordre d'envoi (index ReservationId + Id) ; inversé pour l'affichage.
+        var (messages, total) = await requete
+            .OrderByDescending(m => m.Id)
+            .Include(m => m.Auteur)
+            .PageAsync(pagination);
+        messages.Reverse();
+        return PagedResultDto<MessageDto>.Creer(messages.Select(m => VersDto(m, utilisateurId)).ToList(), pagination, total);
+    }
+
+    /// <summary>Messages reçus non lus → lus (une seule mise à jour SQL), avec accusé de lecture en temps réel.</summary>
+    private async Task MarquerLusAsync(int reservationId, int utilisateurId)
+    {
+        var auteursNonLus = await _context.Messages
+            .Where(m => m.ReservationId == reservationId && m.AuteurId != utilisateurId && m.DateLecture == null)
+            .Select(m => m.AuteurId)
+            .Distinct()
+            .ToListAsync();
+        if (auteursNonLus.Count == 0)
+        {
+            return;
+        }
+        var maintenant = DateTime.UtcNow;
+        await _context.Messages
+            .Where(m => m.ReservationId == reservationId && m.AuteurId != utilisateurId && m.DateLecture == null)
+            .ExecuteUpdateAsync(maj => maj.SetProperty(m => m.DateLecture, (DateTime?)maintenant));
+        // Accusé de lecture instantané chez l'auteur, et pastille des non lus à jour chez le lecteur (autres onglets).
+        var lecture = new { reservationId, lecteurId = utilisateurId, dateLecture = maintenant };
+        var destinataires = auteursNonLus.Select(a => a.ToString()).Append(utilisateurId.ToString()).Distinct().ToList();
+        await _hub.Clients.Users(destinataires).SendAsync("messagesLus", lecture);
+        await _hub.Clients.Group(MessagesHub.GroupeAdmins).SendAsync("messagesLus", lecture);
     }
 
     public async Task<MessageDto> EnvoyerAsync(int reservationId, EnvoyerMessageDto dto, int utilisateurId, RoleUtilisateur role)
@@ -148,12 +173,30 @@ public partial class MessageServices
         return VersDto(message, utilisateurId);
     }
 
-    /// <summary>Messages reçus non lus par l'utilisateur, toutes conversations confondues.</summary>
-    public async Task<MessagesNonLusDto> NonLusAsync(int utilisateurId)
+    /// <summary>
+    /// Messages reçus non lus par l'utilisateur, toutes conversations confondues, ou seulement celles d'un onglet
+    /// (filtre : mêmes valeurs que reservation/lister ; l'onglet est évalué avec le rôle de l'appelant).
+    /// Les réservations sont prises selon le rôle, chacune par son index : voyageur → LocataireId, hôte → logements dont il
+    /// est le bailleur ; sans rôle connu, les deux réunies (UNION ALL). Un seul « LocataireId = @u OR BailleurId = @u »
+    /// obligeait PostgreSQL à parcourir toutes les réservations et tous les logements.
+    /// </summary>
+    public async Task<MessagesNonLusDto> NonLusAsync(int utilisateurId, RoleUtilisateur? role = null, string? filtre = null)
     {
-        var parReservation = await _context.Messages.AsNoTracking()
-            .Where(m => m.AuteurId != utilisateurId && m.DateLecture == null
-                && (m.Reservation!.LocataireId == utilisateurId || m.Reservation.Appartement!.BailleurId == utilisateurId))
+        var commeVoyageur = _context.Reservations.Where(r => r.LocataireId == utilisateurId);
+        var commeHote = _context.Reservations.Where(r => r.Appartement!.BailleurId == utilisateurId);
+        var reservations = role switch
+        {
+            RoleUtilisateur.Locataire => commeVoyageur,
+            RoleUtilisateur.Bailleur => commeHote,
+            // Pas de double compte si l'utilisateur était à la fois voyageur et hôte d'une même réservation.
+            _ => commeVoyageur.Concat(commeHote.Where(r => r.LocataireId != utilisateurId))
+        };
+        if (ReservationServices.NormaliserFiltre(filtre) is { } onglet)
+        {
+            reservations = ReservationServices.AppliquerFiltre(reservations, onglet, role ?? RoleUtilisateur.Locataire, DateTime.UtcNow.Date);
+        }
+        var parReservation = await reservations
+            .SelectMany(r => r.Messages.Where(m => m.AuteurId != utilisateurId && m.DateLecture == null))
             .GroupBy(m => m.ReservationId)
             .Select(g => new NonLusReservationDto { ReservationId = g.Key, Nombre = g.Count() })
             .ToListAsync();

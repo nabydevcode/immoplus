@@ -10,6 +10,7 @@ import {
   messageErreur,
   useChargement,
 } from "../admin/outils";
+import { useValeurDifferee } from "../admin/pagination";
 import type {
   AppartementDto,
   PagedResultDto,
@@ -80,12 +81,20 @@ export default function FormulaireAppartement({
   onAnnuler: () => void;
 }) {
   const modification = appartement !== undefined;
+  // Choix du bailleur (admin) : recherche côté serveur (nom, email, téléphone), 50 résultats au plus.
+  const [rechercheBailleur, setRechercheBailleur] = useState("");
+  const rechercheEnvoyee = useValeurDifferee(rechercheBailleur.trim());
   const { donnees: utilisateurs } = useChargement<PagedResultDto<UtilisateurDto>>(
-    bailleurIdFixe || modification ? null : "utilisateur/lister?role=Bailleur&statut=Valide&taille=100",
+    bailleurIdFixe || modification
+      ? null
+      : `utilisateur/lister?role=Bailleur&statut=Valide&taille=50${rechercheEnvoyee ? `&q=${encodeURIComponent(rechercheEnvoyee)}` : ""}`,
   );
-  const bailleurs = utilisateurs?.donnees.filter((u) => u.role === "Bailleur" && u.statut === "Valide") ?? [];
-
   const [bailleurId, setBailleurId] = useState(bailleurIdFixe ? String(bailleurIdFixe) : "");
+  // Le bailleur choisi reste proposé même s'il ne correspond plus à la recherche.
+  const [bailleurChoisi, setBailleurChoisi] = useState<UtilisateurDto | null>(null);
+  const trouves = utilisateurs?.donnees.filter((u) => u.role === "Bailleur" && u.statut === "Valide") ?? [];
+  const bailleurs =
+    bailleurChoisi && !trouves.some((u) => u.id === bailleurChoisi.id) ? [bailleurChoisi, ...trouves] : trouves;
   const [typeOffre, setTypeOffre] = useState<TypeOffre>((appartement?.typeOffre as TypeOffre) ?? "LongueDuree");
   const [adresse, setAdresse] = useState(appartement?.adresse ?? "");
   const [description, setDescription] = useState(appartement?.description ?? "");
@@ -305,8 +314,26 @@ export default function FormulaireAppartement({
         {!bailleurIdFixe && !modification && (
           <label className="text-sm font-medium text-gray-700">
             Bailleur
-            <select value={bailleurId} onChange={(e) => setBailleurId(e.target.value)} className={classeChamp}>
-              <option value="">-- Choisir un bailleur --</option>
+            <input
+              type="search"
+              value={rechercheBailleur}
+              onChange={(e) => setRechercheBailleur(e.target.value)}
+              placeholder="Rechercher : nom, email ou téléphone"
+              aria-label="Rechercher un bailleur"
+              className={classeChamp}
+            />
+            <select
+              value={bailleurId}
+              onChange={(e) => {
+                setBailleurId(e.target.value);
+                setBailleurChoisi(bailleurs.find((b) => String(b.id) === e.target.value) ?? null);
+              }}
+              className={classeChamp}
+              aria-label="Bailleur"
+            >
+              <option value="">
+                {utilisateurs && trouves.length === 0 ? "-- Aucun bailleur trouvé --" : "-- Choisir un bailleur --"}
+              </option>
               {bailleurs.map((b) => (
                 <option key={b.id} value={b.id}>
                   {b.nom} ({b.email})

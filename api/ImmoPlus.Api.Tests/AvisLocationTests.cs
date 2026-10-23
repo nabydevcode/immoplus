@@ -59,7 +59,7 @@ public class AvisLocationTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFactor
         var avisBailleur = await bailleur.Client.PostJson($"/location/{locationId}/avis", Avis(5)).Attendre<AvisDto>(HttpStatusCode.Created);
         Assert.Equal("BailleurVersLocataire", avisBailleur.Sens);
         Assert.Null(avisBailleur.Proprete);
-        Assert.Contains(f.Smtp.EmailsPour(bailleur.Email), e => e.Sujet.Contains($"[Location n° {locationId:D6}]"));
+        Assert.Contains(await f.EmailsPourAsync(bailleur.Email), e => e.Sujet.Contains($"[Location n° {locationId:D6}]"));
 
         var apres = await bailleur.Client.GetAsync($"/location/{locationId}").Attendre<LocationResponseDto>();
         Assert.True(apres.AvisLocataireDonne);
@@ -97,7 +97,7 @@ public class AvisLocationTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFactor
 
         // Terminée il y a 29 jours, même après seulement 3 mois de location : avis possible.
         var recente = await LocationAsync(locataire.Id, logement.Id, StatutLocation.Terminee, Api.Aujourdhui.AddMonths(-3), Api.Aujourdhui.AddDays(-29));
-        var dto = (await locataire.Client.GetAsync("/location/lister").Attendre<List<LocationResponseDto>>()).Single(l => l.Id == recente);
+        var dto = (await locataire.Client.GetAsync("/location/lister").AttendreDonnees<LocationResponseDto>()).Single(l => l.Id == recente);
         Assert.True(dto.AvisPossible);
         Assert.Equal(Api.Aujourdhui.AddDays(1), dto.AvisPossibleJusquau!.Value.Date);
         await locataire.Client.PostJson($"/location/{recente}/avis", Avis()).Verifier(HttpStatusCode.Created);
@@ -124,7 +124,7 @@ public class AvisLocationTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFactor
 
         async Task<List<int>> Chercher(string criteres) =>
             (await f.CreateClient().GetAsync($"/appartement/lister?typeOffre=LongueDuree&ville={ville}&{criteres}")
-                .Attendre<List<AppartementResponseDto>>()).Select(a => a.Id).Order().ToList();
+                .AttendreDonnees<AppartementResponseDto>()).Select(a => a.Id).Order().ToList();
         Assert.Equal(new[] { economique, sansChambres }, await Chercher("loyerMax=1000000"));
         Assert.Equal(new[] { grand }, await Chercher("chambresMin=3"));
         Assert.Equal(new[] { economique, sansChambres }, await Chercher("avanceMax=4"));

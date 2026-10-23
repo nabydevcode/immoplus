@@ -29,6 +29,8 @@ import AvisLocation from "../components/avis/AvisLocation";
 import BoutonPdf from "../components/documents/BoutonPdf";
 import { contratLocation } from "../components/documents/pdf";
 import { useLienConnexion } from "../hooks/useLienConnexion";
+import { avecPage, listeDe, TAILLE_MAX, useListeProgressive } from "../components/admin/pagination";
+import { VoirPlus } from "../components/admin/ui";
 
 type EtatEtape = "fait" | "en-cours" | "a-venir" | "refuse";
 
@@ -162,7 +164,7 @@ function construireEtapes(
       titre: "Remboursement",
       detail:
         statut === "EnCours" && financement
-          ? `${mensualitesPayees ?? "…"} / ${financement.nombreMensualites} mensualité{financement.nombreMensualites > 1 ? "s" : ""} payées`
+          ? `${mensualitesPayees ?? "…"} / ${financement.nombreMensualites} mensualité${financement.nombreMensualites > 1 ? "s" : ""} payée${financement.nombreMensualites > 1 ? "s" : ""}`
           : statut === "Solde"
             ? "Terminé"
             : c.dateApportPaye
@@ -721,11 +723,14 @@ export default function MesCandidatures() {
   const { estConnecte, roleUtilisateur } = useAuth();
   const lienConnexion = useLienConnexion();
   const estLocataire = estConnecte && roleUtilisateur === "Locataire";
-  const candidatures = useChargement<PagedResultDto<CandidatureDto>>(
-    estLocataire ? "candidature/lister?page=1&taille=100" : null,
+  // Dossiers 10 par 10 (« Voir plus ») ; financements et locations du locataire (peu nombreux) : 100 au plus.
+  const candidatures = useListeProgressive<CandidatureDto>(estLocataire ? "candidature/lister" : null, 10);
+  const financements = useChargement<PagedResultDto<FinancementDto> | FinancementDto[]>(
+    estLocataire ? avecPage("financement/lister", 1, TAILLE_MAX) : null,
   );
-  const financements = useChargement<FinancementDto[]>(estLocataire ? "financement/lister" : null);
-  const locations = useChargement<LocationDto[]>(estLocataire ? "location/lister" : null);
+  const locations = useChargement<PagedResultDto<LocationDto> | LocationDto[]>(
+    estLocataire ? avecPage("location/lister", 1, TAILLE_MAX) : null,
+  );
 
   if (!estLocataire) {
     return (
@@ -738,7 +743,7 @@ export default function MesCandidatures() {
     );
   }
 
-  const liste = candidatures.donnees?.donnees ?? [];
+  const liste = candidatures.elements;
 
   return (
     <div className="px-6 py-10">
@@ -771,10 +776,18 @@ export default function MesCandidatures() {
                   locations.recharger();
                 }}
                 candidature={c}
-                financement={financements.donnees?.find((f) => f.id === c.financementLocationId)}
-                location={locations.donnees?.find((l) => l.id === c.locationId)}
+                financement={listeDe(financements.donnees).find((f) => f.id === c.financementLocationId)}
+                location={listeDe(locations.donnees).find((l) => l.id === c.locationId)}
               />
             ))}
+            <VoirPlus
+              aPlus={candidatures.aPlus}
+              chargement={candidatures.chargementPlus}
+              onClick={candidatures.chargerPlus}
+              affiches={liste.length}
+              total={candidatures.total}
+              libelle="Voir plus de candidatures"
+            />
           </div>
         )}
       </div>

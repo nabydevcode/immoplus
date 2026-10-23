@@ -3,6 +3,7 @@ namespace ImmoPlus.Api.Services;
 using System.Globalization;
 using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using ImmoPlus.Api.Data;
 using ImmoPlus.Api.Dtos;
 using ImmoPlus.Api.Exceptions;
@@ -144,9 +145,10 @@ public class ReservationServices
         // Réservations impayées depuis plus de 24 h sur ce logement : annulées d'abord, leurs dates redeviennent réservables.
         await ExpirerImpayeesAsync(r => r.AppartementId == appartement.Id);
 
-        // Contrôle des disponibilités et création d'un seul tenant (SQLite : verrou d'écriture dès le début de la transaction) :
-        // deux demandes simultanées sur les mêmes dates (double clic, deux voyageurs) ne peuvent pas aboutir toutes les deux.
+        // Contrôle des disponibilités et création d'un seul tenant, sous le verrou du logement : deux demandes simultanées
+        // sur les mêmes dates (double clic, deux voyageurs) passent l'une après l'autre, la seconde voit la première.
         await using var transaction = await _context.Database.BeginTransactionAsync();
+        await _context.Database.VerrouillerAsync(RessourceVerrouillee.Appartement, appartement.Id);
         var (devis, erreurSaisie) = await CalculerAsync(appartement, dto.DateArrivee, dto.DateDepart, dto.NombreVoyageurs);
         if (!devis.Disponible)
         {
@@ -194,6 +196,9 @@ public class ReservationServices
     /// <summary>L'hôte (ou l'admin) accepte la demande : le voyageur peut alors payer pour confirmer.</summary>
     public async Task<ReservationResponseDto> AccepterAsync(int id, int utilisateurId, RoleUtilisateur role)
     {
+        // Sous le verrou de la réservation : une acceptation et un refus simultanés ne s'écrasent pas, le second voit le premier (409).
+        await using var transaction = await _context.Database.BeginTransactionAsync();
+        await _context.Database.VerrouillerAsync(RessourceVerrouillee.Reservation, id);
         var reservation = await ChargerDemandeAsync(id, utilisateurId, role);
         // Accepter un séjour déjà commencé ouvrirait un paiement pour des nuits passées.
         if (reservation.DateArrivee.Date < DateTime.UtcNow.Date)
@@ -203,6 +208,7 @@ public class ReservationServices
         reservation.Statut = StatutReservation.EnAttente;
         reservation.DateReponseHote = DateTime.UtcNow;
         await _context.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         await _notificationServices.DemandeAccepteeAsync(reservation.Locataire!, reservation, reservation.Appartement!);
         return await RechercherAsync(id, utilisateurId, role);
@@ -210,11 +216,14 @@ public class ReservationServices
 
     public async Task<ReservationResponseDto> RefuserAsync(int id, string? motif, int utilisateurId, RoleUtilisateur role)
     {
+        await using var transaction = await _context.Database.BeginTransactionAsync();
+        await _context.Database.VerrouillerAsync(RessourceVerrouillee.Reservation, id);
         var reservation = await ChargerDemandeAsync(id, utilisateurId, role);
         reservation.Statut = StatutReservation.Refusee;
         reservation.MotifRefus = LireMotif(motif);
         reservation.DateReponseHote = DateTime.UtcNow;
         await _context.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         await _notificationServices.DemandeRefuseeAsync(reservation.Locataire!, reservation, reservation.Appartement!);
         return await RechercherAsync(id, utilisateurId, role);
@@ -224,14 +233,21 @@ public class ReservationServices
     /// Demandes restées sans réponse de l'hôte depuis 48 h : refusées automatiquement pour libérer les dates
     /// et prévenir le voyageur. Appelé par les rappels planifiés.
     /// </summary>
-    public async Task<int> ExpirerDemandesAsync(CancellationToken annulation = default)
+    /// <param name="taille">Lot borné (maintenance planifiée) : au plus ce nombre de demandes, les plus anciennes d'abord.</param>
+    public async Task<int> ExpirerDemandesAsync(CancellationToken annulation = default, int? taille = null)
     {
         var limite = DateTime.UtcNow - DelaiReponseHote;
-        var demandes = await _context.Reservations
+        var requete = _context.Reservations
             .Include(r => r.Locataire)
             .Include(r => r.Appartement)
             .Where(r => r.Statut == StatutReservation.DemandeEnvoyee && r.DateCreation <= limite)
-            .ToListAsync(annulation);
+            .OrderBy(r => r.Id)
+            .AsQueryable();
+        if (taille is { } t)
+        {
+            requete = requete.Take(t);
+        }
+        var demandes = await requete.ToListAsync(annulation);
         foreach (var r in demandes)
         {
             r.Statut = StatutReservation.Refusee;
@@ -260,31 +276,64 @@ public class ReservationServices
     /// <param name="perimetre">Limite le traitement aux réservations concernées par la lecture en cours (toutes si null).</param>
     public async Task<int> ExpirerImpayeesAsync(Expression<Func<Reservation, bool>>? perimetre = null, CancellationToken annulation = default)
     {
-        var maintenant = DateTime.UtcNow;
-        var limite = maintenant - DelaiPaiement;
-        var limiteTransaction = maintenant - PaiementMobileServices.DureeValidite;
-        var requete = _context.Reservations.Where(r => r.Statut == StatutReservation.EnAttente
-            && (r.DateReponseHote ?? r.DateCreation) <= limite
-            && !r.Paiements.Any()
-            && !r.TransactionsMobiles.Any(t => t.Statut == StatutTransactionMobile.EnAttente && t.DateCreation > limiteTransaction));
+        var requete = ImpayeesAExpirer(DateTime.UtcNow);
         if (perimetre is not null)
         {
             requete = requete.Where(perimetre);
         }
-        var ids = await requete.Select(r => r.Id).ToListAsync(annulation);
+        return await ExpirerImpayeesParIdsAsync(await requete.Select(r => r.Id).ToListAsync(annulation), annulation);
+    }
 
+    /// <summary>Maintenance planifiée : un lot d'au plus <paramref name="taille"/> impayées de n° supérieur à <paramref name="apresId"/>.</summary>
+    public async Task<Lot> ExpirerImpayeesLotAsync(int apresId, int taille, CancellationToken annulation = default)
+    {
+        var ids = await ImpayeesAExpirer(DateTime.UtcNow).Where(r => r.Id > apresId)
+            .OrderBy(r => r.Id).Select(r => r.Id).Take(taille).ToListAsync(annulation);
+        return new Lot(ids.Count, ids.Count == 0 ? apresId : ids[^1], await ExpirerImpayeesParIdsAsync(ids, annulation));
+    }
+
+    /// <summary>Lot d'un traitement planifié : lignes lues, dernier n° lu (curseur du lot suivant), lignes réellement modifiées.</summary>
+    public readonly record struct Lot(int Lues, int DernierId, int Traitees);
+
+    /// <summary>
+    /// Impayées : en attente depuis 24 h (après l'acceptation de l'hôte, ou la création si elle est instantanée), sans aucun
+    /// paiement ni paiement mobile en cours de validation. Elles ne bloquent plus les dates, même pas encore annulées.
+    /// </summary>
+    public IQueryable<Reservation> ImpayeesAExpirer(DateTime maintenant)
+    {
+        var limite = maintenant - DelaiPaiement;
+        var limiteTransaction = maintenant - PaiementMobileServices.DureeValidite;
+        return _context.Reservations.Where(r => r.Statut == StatutReservation.EnAttente
+            && (r.DateReponseHote ?? r.DateCreation) <= limite
+            && !r.Paiements.Any()
+            && !r.TransactionsMobiles.Any(t => t.Statut == StatutTransactionMobile.EnAttente && t.DateCreation > limiteTransaction));
+    }
+
+    private async Task<int> ExpirerImpayeesParIdsAsync(List<int> ids, CancellationToken annulation)
+    {
+        var maintenant = DateTime.UtcNow;
         var annulees = 0;
         foreach (var id in ids)
         {
-            // Mise à jour conditionnelle : deux lectures simultanées ou un paiement arrivé entre-temps → une seule annulation, emails envoyés une fois.
-            var modifiees = await _context.Reservations
-                .Where(r => r.Id == id && r.Statut == StatutReservation.EnAttente && !r.Paiements.Any())
-                .ExecuteUpdateAsync(maj => maj
-                    .SetProperty(r => r.Statut, StatutReservation.Annulee)
-                    .SetProperty(r => r.AnnuleePar, (AuteurAnnulation?)AuteurAnnulation.Systeme)
-                    .SetProperty(r => r.MotifAnnulation, (string?)MotifPaiementNonRecu)
-                    .SetProperty(r => r.DateAnnulation, (DateTime?)maintenant)
-                    .SetProperty(r => r.MontantARembourser, (decimal?)0m), annulation);
+            // Sous le verrou de la réservation (comme les paiements) et par mise à jour conditionnelle : un paiement en cours
+            // d'enregistrement est attendu puis vu, deux lectures simultanées → une seule annulation, emails envoyés une fois.
+            int modifiees;
+            await using (var transaction = await TransactionSiAbsenteAsync(annulation))
+            {
+                await _context.Database.VerrouillerAsync(RessourceVerrouillee.Reservation, id, annulation);
+                modifiees = await _context.Reservations
+                    .Where(r => r.Id == id && r.Statut == StatutReservation.EnAttente && !r.Paiements.Any())
+                    .ExecuteUpdateAsync(maj => maj
+                        .SetProperty(r => r.Statut, StatutReservation.Annulee)
+                        .SetProperty(r => r.AnnuleePar, (AuteurAnnulation?)AuteurAnnulation.Systeme)
+                        .SetProperty(r => r.MotifAnnulation, (string?)MotifPaiementNonRecu)
+                        .SetProperty(r => r.DateAnnulation, (DateTime?)maintenant)
+                        .SetProperty(r => r.MontantARembourser, (decimal?)0m), annulation);
+                if (transaction is not null)
+                {
+                    await transaction.CommitAsync(annulation);
+                }
+            }
             if (modifiees == 0)
             {
                 continue;
@@ -310,10 +359,17 @@ public class ReservationServices
     public async Task<(int Annulees, int ConfirmeesAVenir)> AnnulerReservationsHoteDesactiveAsync(int bailleurId)
     {
         await using var transaction = await _context.Database.BeginTransactionAsync();
+        // Verrous des réservations concernées d'abord (paiements simultanés attendus), puis relecture de leur état à jour.
+        var aVerrouiller = await _context.Reservations
+            .Where(r => r.Appartement!.BailleurId == bailleurId
+                && (r.Statut == StatutReservation.DemandeEnvoyee || r.Statut == StatutReservation.EnAttente))
+            .Select(r => r.Id)
+            .ToListAsync();
+        await _context.Database.VerrouillerAsync(RessourceVerrouillee.Reservation, aVerrouiller);
         var reservations = await _context.Reservations
             .Include(r => r.Locataire)
             .Include(r => r.Appartement).ThenInclude(a => a!.Bailleur)
-            .Where(r => r.Appartement!.BailleurId == bailleurId
+            .Where(r => aVerrouiller.Contains(r.Id)
                 && (r.Statut == StatutReservation.DemandeEnvoyee || r.Statut == StatutReservation.EnAttente))
             .ToListAsync();
         var ids = reservations.Select(r => r.Id).ToList();
@@ -347,6 +403,10 @@ public class ReservationServices
         return (reservations.Count, confirmeesAVenir);
     }
 
+    /// <summary>Nouvelle transaction, ou null si l'appelant en a déjà une (le verrou est alors pris dans la sienne).</summary>
+    private async Task<IDbContextTransaction?> TransactionSiAbsenteAsync(CancellationToken annulation) =>
+        _context.Database.CurrentTransaction is null ? await _context.Database.BeginTransactionAsync(annulation) : null;
+
     private async Task<Reservation> ChargerDemandeAsync(int id, int utilisateurId, RoleUtilisateur role)
     {
         var reservation = await _context.Reservations
@@ -372,21 +432,47 @@ public class ReservationServices
     /// <param name="perimetre">Limite le traitement aux réservations concernées par la lecture en cours (toutes si null).</param>
     public async Task<int> TerminerSejoursAsync(Expression<Func<Reservation, bool>>? perimetre = null, CancellationToken annulation = default)
     {
-        var aujourdhui = DateTime.UtcNow.Date;
-        var requete = _context.Reservations.Where(r => r.Statut == StatutReservation.Confirmee && r.DateDepart <= aujourdhui);
+        var requete = SejoursATerminer();
         if (perimetre is not null)
         {
             requete = requete.Where(perimetre);
         }
-        var ids = await requete.Select(r => r.Id).ToListAsync(annulation);
+        return await TerminerSejoursParIdsAsync(await requete.Select(r => r.Id).ToListAsync(annulation), annulation);
+    }
 
+    /// <summary>Maintenance planifiée : un lot d'au plus <paramref name="taille"/> séjours à terminer de n° supérieur à <paramref name="apresId"/>.</summary>
+    public async Task<Lot> TerminerSejoursLotAsync(int apresId, int taille, CancellationToken annulation = default)
+    {
+        var ids = await SejoursATerminer().Where(r => r.Id > apresId)
+            .OrderBy(r => r.Id).Select(r => r.Id).Take(taille).ToListAsync(annulation);
+        return new Lot(ids.Count, ids.Count == 0 ? apresId : ids[^1], await TerminerSejoursParIdsAsync(ids, annulation));
+    }
+
+    private IQueryable<Reservation> SejoursATerminer()
+    {
+        var aujourdhui = DateTime.UtcNow.Date;
+        return _context.Reservations.Where(r => r.Statut == StatutReservation.Confirmee && r.DateDepart <= aujourdhui);
+    }
+
+    private async Task<int> TerminerSejoursParIdsAsync(List<int> ids, CancellationToken annulation)
+    {
         var terminees = 0;
         foreach (var id in ids)
         {
-            // Mise à jour conditionnelle : si deux lectures simultanées traitent le même séjour, une seule envoie les emails.
-            var modifiees = await _context.Reservations
-                .Where(r => r.Id == id && r.Statut == StatutReservation.Confirmee)
-                .ExecuteUpdateAsync(maj => maj.SetProperty(r => r.Statut, StatutReservation.Terminee), annulation);
+            // Sous le verrou de la réservation (une annulation simultanée passe avant ou après, jamais entre les deux) et par
+            // mise à jour conditionnelle : si deux lectures simultanées traitent le même séjour, une seule envoie les emails.
+            int modifiees;
+            await using (var transaction = await TransactionSiAbsenteAsync(annulation))
+            {
+                await _context.Database.VerrouillerAsync(RessourceVerrouillee.Reservation, id, annulation);
+                modifiees = await _context.Reservations
+                    .Where(r => r.Id == id && r.Statut == StatutReservation.Confirmee)
+                    .ExecuteUpdateAsync(maj => maj.SetProperty(r => r.Statut, StatutReservation.Terminee), annulation);
+                if (transaction is not null)
+                {
+                    await transaction.CommitAsync(annulation);
+                }
+            }
             if (modifiees == 0)
             {
                 continue;
@@ -402,7 +488,18 @@ public class ReservationServices
         return terminees;
     }
 
-    public async Task<List<ReservationResponseDto>> ListerAsync(int utilisateurId, RoleUtilisateur role)
+    /// <summary>Onglets des listes de réservations (paramètre filtre=, casse ignorée).</summary>
+    public static readonly string[] Filtres = ["Demandes", "Actives", "AVenir", "AEvaluer", "Passees", "ARembourser"];
+
+    /// <summary>
+    /// Réservations visibles par l'appelant (voyageur : les siennes ; hôte : celles de ses logements ; admin : toutes), paginées.
+    /// filtre : Demandes (en attente de l'hôte, les plus anciennes d'abord), Actives (qui bloquent les dates), AVenir (départ
+    /// aujourd'hui ou plus tard, par date d'arrivée ; sans les demandes pour l'hôte, qui les voit dans « Demandes »), AEvaluer
+    /// (séjour terminé, avis de l'appelant encore possible), Passees (ni demande ni à venir), ARembourser (annulée, reste dû) ;
+    /// sans filtre : toutes, les plus récentes d'abord. statut : statut exact. q : n° de réservation, nom du voyageur ou adresse.
+    /// </summary>
+    public async Task<PagedResultDto<ReservationResponseDto>> ListerAsync(int utilisateurId, RoleUtilisateur role, Pagination pagination,
+        string? filtre = null, string? statut = null, string? q = null)
     {
         var requete = _context.Reservations.AsNoTracking().AsQueryable();
 
@@ -418,20 +515,101 @@ public class ReservationServices
             await ExpirerImpayeesAsync(r => r.Appartement!.BailleurId == utilisateurId);
             await TerminerSejoursAsync(r => r.Appartement!.BailleurId == utilisateurId);
         }
-        else
+        // Admin : plus de traitement de toute la base pendant la lecture (20 à 40 s et des milliers d'emails d'un coup sur une
+        // grosse base) ; la maintenance planifiée s'en charge toutes les 2 min, et les lignes affichées sont mises à jour ci-dessous.
+
+        if (!string.IsNullOrWhiteSpace(statut))
         {
-            await ExpirerImpayeesAsync();
-            await TerminerSejoursAsync();
+            if (int.TryParse(statut, out _) || !Enum.TryParse<StatutReservation>(statut.Trim(), true, out var s) || !Enum.IsDefined(s))
+            {
+                throw new InvalidOperationException("Statut invalide. Utilisez DemandeEnvoyee, EnAttente, Confirmee, Terminee, Annulee ou Refusee");
+            }
+            requete = requete.Where(r => r.Statut == s);
+        }
+        if (!string.IsNullOrWhiteSpace(q))
+        {
+            var numero = RechercheTexte.Reference(q);
+            var motif = RechercheTexte.Contient(q);
+            requete = requete.Where(r => r.Id == numero
+                || EF.Functions.ILike(AppDbContext.SansAccents(r.Locataire!.Nom), AppDbContext.SansAccents(motif))
+                || EF.Functions.ILike(AppDbContext.SansAccents(r.Appartement!.Adresse), AppDbContext.SansAccents(motif)));
         }
 
-        var reservations = await requete
-            .Include(r => r.Locataire)
-            .Include(r => r.Appartement).ThenInclude(a => a!.Bailleur)
-            .OrderByDescending(r => r.DateCreation)
-            .ToListAsync();
+        var nomFiltre = NormaliserFiltre(filtre);
+        var filtrees = AppliquerFiltre(requete, nomFiltre, role, DateTime.UtcNow.Date);
+        var triee = nomFiltre switch
+        {
+            // Délai de réponse de 48 h : les plus anciennes d'abord.
+            "Demandes" => filtrees.OrderBy(r => r.DateCreation).ThenBy(r => r.Id),
+            "AVenir" => filtrees.OrderBy(r => r.DateArrivee).ThenBy(r => r.Id),
+            "Passees" or "AEvaluer" => filtrees.OrderByDescending(r => r.DateArrivee).ThenByDescending(r => r.Id),
+            "ARembourser" => filtrees.OrderByDescending(r => r.DateAnnulation).ThenByDescending(r => r.Id),
+            _ => filtrees.OrderByDescending(r => r.DateCreation).ThenByDescending(r => r.Id)
+        };
 
-        return await VersDtosAsync(reservations, utilisateurId, role);
+        var page = triee
+            .Include(r => r.Locataire)
+            .Include(r => r.Appartement).ThenInclude(a => a!.Bailleur);
+        var (reservations, total) = await page.PageAsync(pagination);
+        if (role == RoleUtilisateur.Admin && reservations.Count > 0)
+        {
+            // Traitement ciblé des seules lignes affichées : une impayée expirée ou un séjour fini n'apparaît pas avec un statut périmé.
+            var ids = reservations.Select(r => r.Id).ToList();
+            var modifiees = await ExpirerImpayeesAsync(r => ids.Contains(r.Id)) + await TerminerSejoursAsync(r => ids.Contains(r.Id));
+            if (modifiees > 0)
+            {
+                (reservations, total) = await page.PageAsync(pagination);
+            }
+        }
+
+        return PagedResultDto<ReservationResponseDto>.Creer(await VersDtosAsync(reservations, utilisateurId, role), pagination, total);
     }
+
+    /// <summary>Nom canonique d'un filtre d'onglet (null : toutes) ; 400 si inconnu.</summary>
+    public static string? NormaliserFiltre(string? filtre)
+    {
+        if (string.IsNullOrWhiteSpace(filtre) || filtre.Trim().Equals("Toutes", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+        return Filtres.FirstOrDefault(f => f.Equals(filtre.Trim(), StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException($"Filtre invalide. Utilisez {string.Join(", ", Filtres)} ou Toutes");
+    }
+
+    /// <summary>Onglet appliqué en SQL (partagé par la liste et les messages non lus par onglet).</summary>
+    public static IQueryable<Reservation> AppliquerFiltre(IQueryable<Reservation> requete, string? filtre, RoleUtilisateur role, DateTime aujourdhui)
+    {
+        switch (filtre)
+        {
+            case "Demandes":
+                return requete.Where(r => r.Statut == StatutReservation.DemandeEnvoyee);
+            case "Actives":
+                return requete.Where(r => r.Statut == StatutReservation.DemandeEnvoyee || r.Statut == StatutReservation.EnAttente
+                    || r.Statut == StatutReservation.Confirmee);
+            case "AVenir":
+                return AVenir(requete, role, aujourdhui);
+            case "Passees":
+                // Ni demande, ni séjour à venir (en attente de paiement ou confirmé avec un départ pas encore passé).
+                return requete.Where(r => r.Statut != StatutReservation.DemandeEnvoyee
+                    && !((r.Statut == StatutReservation.EnAttente || r.Statut == StatutReservation.Confirmee) && r.DateDepart >= aujourdhui));
+            case "AEvaluer":
+                // Fenêtre de JoursPourAvis jours après le départ, sans avis de l'appelant dans son sens (voyageur → logement, hôte → voyageur).
+                var limite = aujourdhui.AddDays(-JoursPourAvis);
+                var sens = role == RoleUtilisateur.Bailleur ? SensAvis.HoteVersVoyageur : SensAvis.VoyageurVersLogement;
+                return requete.Where(r => r.Statut == StatutReservation.Terminee && r.DateDepart >= limite && !r.Avis.Any(a => a.Sens == sens));
+            case "ARembourser":
+                return requete.Where(r => r.Statut == StatutReservation.Annulee
+                    && r.MontantARembourser != null && r.MontantARembourser > (r.MontantRembourse ?? 0));
+            default:
+                return requete;
+        }
+    }
+
+    /// <summary>Séjours à venir (départ aujourd'hui ou plus tard) qui bloquent les dates ; l'hôte voit les demandes à part.</summary>
+    private static IQueryable<Reservation> AVenir(IQueryable<Reservation> requete, RoleUtilisateur role, DateTime aujourdhui) =>
+        requete.Where(r => (r.Statut == StatutReservation.EnAttente || r.Statut == StatutReservation.Confirmee
+                || (role != RoleUtilisateur.Bailleur && r.Statut == StatutReservation.DemandeEnvoyee))
+            && r.DateDepart >= aujourdhui);
 
     public async Task<ReservationResponseDto> RechercherAsync(int id, int utilisateurId, RoleUtilisateur role)
     {
@@ -510,8 +688,10 @@ public class ReservationServices
         await ExpirerImpayeesAsync(r => r.Id == id);
         await TerminerSejoursAsync(r => r.Id == id);
         var motifLu = LireMotif(motif);
-        // Lecture des paiements et annulation d'un seul tenant : un paiement enregistré au même instant est compté ou refusé, jamais perdu.
+        // Lecture des paiements et annulation d'un seul tenant, sous le verrou de la réservation (comme les paiements) :
+        // un paiement enregistré au même instant est compté ou refusé, jamais perdu.
         await using var transaction = await _context.Database.BeginTransactionAsync();
+        await _context.Database.VerrouillerAsync(RessourceVerrouillee.Reservation, id);
         var reservation = await ChargerPourAnnulationAsync(id);
         var auteur = AuteurAnnulationPour(reservation, utilisateurId, role);
         VerifierAnnulable(reservation, auteur);
@@ -543,8 +723,9 @@ public class ReservationServices
     /// <summary>L'admin enregistre un remboursement versé au voyageur (cumulable jusqu'au montant dû).</summary>
     public async Task<ReservationResponseDto> EnregistrerRemboursementAsync(int id, RemboursementDto dto, int utilisateurId, RoleUtilisateur role)
     {
-        // Double clic : le second enregistrement voit le premier et ne peut pas dépasser le montant dû.
+        // Double clic : sous le verrou de la réservation, le second enregistrement attend le premier, le voit et ne peut pas dépasser le montant dû.
         await using var transaction = await _context.Database.BeginTransactionAsync();
+        await _context.Database.VerrouillerAsync(RessourceVerrouillee.Reservation, id);
         var reservation = await ChargerPourAnnulationAsync(id);
         // Remboursement : réservation annulée, ou trop-perçu (paiement mobile validé après un règlement complet).
         if (reservation.Statut != StatutReservation.Annulee && (reservation.MontantARembourser ?? 0) <= 0)

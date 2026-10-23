@@ -22,6 +22,8 @@ public class EmailServices
             Body = corpsHtml,
             IsBodyHtml = true
         };
-        await client.SendMailAsync(message);
+        // Envoi fait par la boîte d'envoi, dans une transaction : un serveur muet ne la bloque pas plus de 30 s.
+        using var delai = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await client.SendMailAsync(message, delai.Token);
     }
 }

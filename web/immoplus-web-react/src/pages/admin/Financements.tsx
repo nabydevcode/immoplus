@@ -4,8 +4,9 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import Echeancier from "../../components/admin/Echeancier";
 import { ChampRecherche } from "../../components/candidatures/RechercheCandidature";
 import { filtrerRecherche } from "../../components/candidatures/recherche";
-import { Badge, EnTete, EtatListe, Tableau } from "../../components/admin/ui";
-import { formaterMontant, useChargement, formaterReference } from "../../components/admin/outils";
+import { Badge, EnTete, EtatListe, Pagination, Tableau } from "../../components/admin/ui";
+import { formaterMontant, formaterReference } from "../../components/admin/outils";
+import { texteRecherche, useListeAOnglets, useValeurDifferee } from "../../components/admin/pagination";
 import type { FinancementDto } from "../../types/models";
 
 const statutsFinancement = {
@@ -14,21 +15,39 @@ const statutsFinancement = {
   Solde: { label: "Soldé", ton: "succes" },
 } as const;
 
+const ONGLETS = ["Tous"] as const;
+const requeteOnglet = () => "";
+const LOCAL = {
+  dansOnglet: () => true,
+  // Un numéro retrouve le financement, sa location ou le dossier d'origine ; un texte, le locataire ou l'adresse.
+  rechercher: (liste: FinancementDto[], texte: string) =>
+    filtrerRecherche(
+      liste,
+      texte,
+      (f) => [f.id, f.locationId, f.candidatureId],
+      (f) => [f.locataireNom, f.appartementAdresse],
+    ) ?? liste,
+};
+
 export default function Financements() {
-  const { donnees, chargement, erreur, recharger } = useChargement<FinancementDto[]>("financement/lister");
   const [params] = useSearchParams();
   const q = params.get("q") ?? "";
   const [ouvertChoisi, setOuvert] = useState<number | null | undefined>(undefined);
-  const financements = donnees ?? [];
   const [recherche, setRecherche] = useState(q);
-  // Un numéro retrouve le financement, sa location ou le dossier d'origine ; un texte, le locataire ou l'adresse.
-  const resultats = filtrerRecherche(
-    financements,
-    recherche,
-    (f) => [f.id, f.locationId, f.candidatureId],
-    (f) => [f.locataireNom, f.appartementAdresse],
-  );
-  const affiches = resultats ?? financements;
+  // Recherche côté serveur (q), après une courte pause de saisie.
+  const rechercheEnvoyee = useValeurDifferee(texteRecherche(recherche));
+  const liste = useListeAOnglets<FinancementDto, "Tous">({
+    base: "financement/lister",
+    onglet: "Tous",
+    onglets: ONGLETS,
+    requeteOnglet,
+    recherche: rechercheEnvoyee,
+    mode: "pages",
+    local: LOCAL,
+  });
+  const { chargement, erreur, recharger } = liste;
+  const affiches = liste.elements;
+  const resultats = rechercheEnvoyee ? affiches : null;
   // Lien direct (?q=référence, depuis le tableau de bord) : la page s'ouvre filtrée sur la référence,
   // et l'élément s'ouvre tout seul s'il est le seul résultat, tant que l'utilisateur n'a rien ouvert lui-même.
   const ouvert = ouvertChoisi !== undefined ? ouvertChoisi : q && resultats?.length === 1 ? resultats[0].id : null;
@@ -112,6 +131,7 @@ export default function Financements() {
             </Fragment>
           ))}
         </Tableau>
+        <Pagination page={liste.page} totalPages={liste.totalPages} onChange={liste.setPage} total={liste.total} />
       </EtatListe>
     </>
   );

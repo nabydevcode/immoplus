@@ -1,41 +1,62 @@
+import { lazy, Suspense, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 import Layout from "./components/Layout";
 import Home from "./pages/Home";
-import Login from "./pages/Login";
-import Inscription from "./pages/Inscription";
-import MotDePasseOublie from "./pages/MotDePasseOublie";
-import ReinitialiserMotDePasse from "./pages/ReinitialiserMotDePasse";
-import Annonces from "./pages/Annonces";
-import DetailAppartement from "./pages/DetailAppartement";
-import Candidater from "./pages/Candidater";
-import Reserver from "./pages/Reserver";
-import MesCandidatures from "./pages/MesCandidatures";
-import MesReservations from "./pages/MesReservations";
-import CandidaturesRecues from "./pages/bailleur/CandidaturesRecues";
-import MesLogements from "./pages/bailleur/MesLogements";
-import ReservationsRecues from "./pages/bailleur/ReservationsRecues";
 import NotFound from "./pages/NotFound";
-import AdminLayout from "./components/admin/AdminLayout";
-import TableauDeBord from "./pages/admin/TableauDeBord";
-import Utilisateurs from "./pages/admin/Utilisateurs";
-import Appartements from "./pages/admin/Appartements";
-import Candidatures from "./pages/admin/Candidatures";
-import Locations from "./pages/admin/Locations";
-import Financements from "./pages/admin/Financements";
-import Reservations from "./pages/admin/Reservations";
-import ProfilAdmin from "./pages/admin/Profil";
-import SmsEnvoyes from "./pages/admin/SmsEnvoyes";
-import Sauvegardes from "./pages/admin/Sauvegardes";
-import Journal from "./pages/admin/Journal";
-import Exports from "./pages/admin/Exports";
-import Signalements from "./pages/admin/Signalements";
-import Identites from "./pages/admin/Identites";
-import Profil from "./pages/Profil";
-import MesFavoris from "./pages/MesFavoris";
-import TableauDeBordHote from "./pages/bailleur/TableauDeBordHote";
 import TitreRoute from "./navigation/TitreRoute";
 import FavorisProvider from "./components/favoris/FavorisProvider";
+
+// Pages téléchargées à la demande : le paquet principal ne contient que l'accueil et la structure du site.
+const Login = lazy(() => import("./pages/Login"));
+const Inscription = lazy(() => import("./pages/Inscription"));
+const MotDePasseOublie = lazy(() => import("./pages/MotDePasseOublie"));
+const ReinitialiserMotDePasse = lazy(() => import("./pages/ReinitialiserMotDePasse"));
+const Annonces = lazy(() => import("./pages/Annonces"));
+const DetailAppartement = lazy(() => import("./pages/DetailAppartement"));
+const Candidater = lazy(() => import("./pages/Candidater"));
+const Reserver = lazy(() => import("./pages/Reserver"));
+const MesCandidatures = lazy(() => import("./pages/MesCandidatures"));
+const MesReservations = lazy(() => import("./pages/MesReservations"));
+const CandidaturesRecues = lazy(() => import("./pages/bailleur/CandidaturesRecues"));
+const MesLogements = lazy(() => import("./pages/bailleur/MesLogements"));
+const ReservationsRecues = lazy(() => import("./pages/bailleur/ReservationsRecues"));
+const AdminLayout = lazy(() => import("./components/admin/AdminLayout"));
+const TableauDeBord = lazy(() => import("./pages/admin/TableauDeBord"));
+const Utilisateurs = lazy(() => import("./pages/admin/Utilisateurs"));
+const Appartements = lazy(() => import("./pages/admin/Appartements"));
+const Candidatures = lazy(() => import("./pages/admin/Candidatures"));
+const Locations = lazy(() => import("./pages/admin/Locations"));
+const Financements = lazy(() => import("./pages/admin/Financements"));
+const Reservations = lazy(() => import("./pages/admin/Reservations"));
+const ProfilAdmin = lazy(() => import("./pages/admin/Profil"));
+const SmsEnvoyes = lazy(() => import("./pages/admin/SmsEnvoyes"));
+const MessagesSortants = lazy(() => import("./pages/admin/MessagesSortants"));
+const Sauvegardes = lazy(() => import("./pages/admin/Sauvegardes"));
+const Journal = lazy(() => import("./pages/admin/Journal"));
+const Exports = lazy(() => import("./pages/admin/Exports"));
+const Signalements = lazy(() => import("./pages/admin/Signalements"));
+const Identites = lazy(() => import("./pages/admin/Identites"));
+const Profil = lazy(() => import("./pages/Profil"));
+const MesFavoris = lazy(() => import("./pages/MesFavoris"));
+const TableauDeBordHote = lazy(() => import("./pages/bailleur/TableauDeBordHote"));
+
+function ChargementPage() {
+  return (
+    <div className="px-6 py-16 text-center text-gray-500 text-sm" role="status">
+      Chargement...
+    </div>
+  );
+}
+
+/** Page publique ou d'espace personnel : barre de navigation et pied de page restent affichés pendant le téléchargement. */
+function AvecLayout({ children }: { children: ReactNode }) {
+  return (
+    <Layout>
+      <Suspense fallback={<ChargementPage />}>{children}</Suspense>
+    </Layout>
+  );
+}
 
 export default function App() {
   return (
@@ -47,112 +68,147 @@ export default function App() {
             <Route
               path="/"
               element={
-                <Layout>
+                <AvecLayout>
                   <Home />
-                </Layout>
+                </AvecLayout>
               }
             />
-            <Route path="/login" element={<Login />} />
-            <Route path="/inscription" element={<Inscription />} />
-            <Route path="/mot-de-passe-oublie" element={<MotDePasseOublie />} />
-            <Route path="/reinitialiser-mot-de-passe" element={<ReinitialiserMotDePasse />} />
+            <Route
+              path="/login"
+              element={
+                <Suspense fallback={<ChargementPage />}>
+                  <Login />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/inscription"
+              element={
+                <Suspense fallback={<ChargementPage />}>
+                  <Inscription />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/mot-de-passe-oublie"
+              element={
+                <Suspense fallback={<ChargementPage />}>
+                  <MotDePasseOublie />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/reinitialiser-mot-de-passe"
+              element={
+                <Suspense fallback={<ChargementPage />}>
+                  <ReinitialiserMotDePasse />
+                </Suspense>
+              }
+            />
             <Route
               path="/annonces/:type"
               element={
-                <Layout>
+                <AvecLayout>
                   <Annonces />
-                </Layout>
+                </AvecLayout>
               }
             />
             <Route
               path="/annonces/:type/:id"
               element={
-                <Layout>
+                <AvecLayout>
                   <DetailAppartement />
-                </Layout>
+                </AvecLayout>
               }
             />
             <Route
               path="/annonces/:type/:id/candidater"
               element={
-                <Layout>
+                <AvecLayout>
                   <Candidater />
-                </Layout>
+                </AvecLayout>
               }
             />
             <Route
               path="/annonces/:type/:id/reserver"
               element={
-                <Layout>
+                <AvecLayout>
                   <Reserver />
-                </Layout>
+                </AvecLayout>
               }
             />
             <Route
               path="/mes-candidatures"
               element={
-                <Layout>
+                <AvecLayout>
                   <MesCandidatures />
-                </Layout>
+                </AvecLayout>
               }
             />
             <Route
               path="/mes-reservations"
               element={
-                <Layout>
+                <AvecLayout>
                   <MesReservations />
-                </Layout>
+                </AvecLayout>
               }
             />
             <Route
               path="/profil"
               element={
-                <Layout>
+                <AvecLayout>
                   <Profil />
-                </Layout>
+                </AvecLayout>
               }
             />
             <Route
               path="/favoris"
               element={
-                <Layout>
+                <AvecLayout>
                   <MesFavoris />
-                </Layout>
+                </AvecLayout>
               }
             />
             <Route
               path="/bailleur/tableau-de-bord"
               element={
-                <Layout>
+                <AvecLayout>
                   <TableauDeBordHote />
-                </Layout>
+                </AvecLayout>
               }
             />
             <Route
               path="/bailleur/logements"
               element={
-                <Layout>
+                <AvecLayout>
                   <MesLogements />
-                </Layout>
+                </AvecLayout>
               }
             />
             <Route
               path="/bailleur/candidatures"
               element={
-                <Layout>
+                <AvecLayout>
                   <CandidaturesRecues />
-                </Layout>
+                </AvecLayout>
               }
             />
             <Route
               path="/bailleur/reservations"
               element={
-                <Layout>
+                <AvecLayout>
                   <ReservationsRecues />
-                </Layout>
+                </AvecLayout>
               }
             />
-            <Route path="/admin" element={<AdminLayout />}>
+            <Route
+              path="/admin"
+              element={
+                <Suspense fallback={<ChargementPage />}>
+                  <AdminLayout />
+                </Suspense>
+              }
+            >
               <Route index element={<TableauDeBord />} />
               <Route path="utilisateurs" element={<Utilisateurs />} />
               <Route path="appartements" element={<Appartements />} />
@@ -161,6 +217,7 @@ export default function App() {
               <Route path="financements" element={<Financements />} />
               <Route path="reservations" element={<Reservations />} />
               <Route path="sms" element={<SmsEnvoyes />} />
+              <Route path="messages-sortants" element={<MessagesSortants />} />
               <Route path="sauvegardes" element={<Sauvegardes />} />
               <Route path="identites" element={<Identites />} />
               <Route path="signalements" element={<Signalements />} />
@@ -171,9 +228,9 @@ export default function App() {
             <Route
               path="*"
               element={
-                <Layout>
+                <AvecLayout>
                   <NotFound />
-                </Layout>
+                </AvecLayout>
               }
             />
           </Routes>

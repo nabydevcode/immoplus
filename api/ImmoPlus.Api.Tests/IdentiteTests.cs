@@ -62,7 +62,7 @@ public class IdentiteTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFactory>
         Assert.Equal("application/pdf", verso.Content.Headers.ContentType!.MediaType);
         await admin.Client.GetAsync($"/admin/identites/{demande.Id}/fichier/autre").Verifier(HttpStatusCode.BadRequest);
 
-        var enAttente = await admin.Client.GetAsync("/admin/identites?statut=EnAttente").Attendre<List<PieceIdentiteDto>>();
+        var enAttente = await admin.Client.GetAsync("/admin/identites?statut=EnAttente").AttendreDonnees<PieceIdentiteDto>();
         Assert.Contains(enAttente, d => d.Id == demande.Id && d.UtilisateurEmail == bailleur.Email);
         await bailleur.Client.PostJson($"/admin/identites/{demande.Id}/valider").Verifier(HttpStatusCode.Forbidden);
 
@@ -71,7 +71,7 @@ public class IdentiteTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFactory>
         await admin.Client.PostJson($"/admin/identites/{demande.Id}/refuser", new { motif = "Trop tard" }).Erreur(HttpStatusCode.Conflict);
         Assert.True((await f.CreateClient().GetAsync($"/utilisateur/{bailleur.Id}/profil-public").Attendre<ProfilPublicDto>()).IdentiteVerifiee);
         Assert.True((await bailleur.Client.GetAsync("/utilisateur/moi").Attendre<UtilisateurResponseDto>()).IdentiteVerifiee);
-        Assert.Contains(f.Smtp.EmailsPour(bailleur.Email), e => e.Sujet.Contains("identité est vérifiée"));
+        Assert.Contains(await f.EmailsPourAsync(bailleur.Email), e => e.Sujet.Contains("identité est vérifiée"));
         // Identité déjà vérifiée : plus de nouvelle demande.
         await bailleur.Client.PostAsync("/utilisateur/moi/identite", Demande("CNI", ("recto.png", Api.Png))).Erreur(HttpStatusCode.Conflict);
     }

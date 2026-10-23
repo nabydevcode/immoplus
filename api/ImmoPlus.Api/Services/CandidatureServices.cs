@@ -2,6 +2,7 @@ namespace ImmoPlus.Api.Services;
 
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using ImmoPlus.Api.Data;
 using ImmoPlus.Api.Dtos;
 using ImmoPlus.Api.Exceptions;
@@ -24,6 +25,13 @@ public class CandidatureServices
         _notificationServices = notificationServices;
     }
 
+    /// <summary>
+    /// Apport fixé par la plateforme, non choisi par le locataire : 2 mois de loyer, ou toute l'avance si elle est plus courte.
+    /// Le reste de l'avance est financé par ImmoPlus (même minimum que FinancementServices).
+    /// </summary>
+    public static decimal ApportFixe(Appartement appartement) =>
+        Math.Min(appartement.LoyerMensuel!.Value * 2, appartement.LoyerMensuel.Value * appartement.DureeAvanceExigee!.Value);
+
     public async Task<CandidatureResponseDto> CreerAsync(int locataireId, CandidatureDto dto)
     {
         var appartement = await _context.Appartements.Include(a => a.Bailleur).FirstOrDefaultAsync(a => a.Id == dto.AppartementId);
@@ -44,14 +52,8 @@ public class CandidatureServices
             throw new InvalidOperationException("SituationProfessionnelle invalide");
         }
 
-        // Même règle que FinancementServices : sous l'avance totale, l'apport doit couvrir au moins 2 mois de loyer,
-        // sinon le bailleur ne pourrait jamais accepter le dossier.
-        var avanceExigee = appartement.LoyerMensuel!.Value * appartement.DureeAvanceExigee!.Value;
-        var apportMinimum = appartement.LoyerMensuel.Value * 2;
-        if (dto.ApportInitial < avanceExigee && dto.ApportInitial < apportMinimum)
-        {
-            throw new InvalidOperationException($"L'apport initial doit être d'au moins {apportMinimum.ToString("N0", CultureInfo.GetCultureInfo("fr-FR"))} GNF (2 mois de loyer)");
-        }
+        // L'apport n'est pas choisi par le locataire : il est fixé par la plateforme (voir ApportFixe).
+        var apportInitial = ApportFixe(appartement);
 
         var dejaCandidat = await _context.Candidatures.AnyAsync(c =>
             c.LocataireId == locataireId && c.AppartementId == dto.AppartementId
@@ -66,7 +68,7 @@ public class CandidatureServices
         {
             LocataireId = locataireId,
             AppartementId = dto.AppartementId,
-            ApportInitial = dto.ApportInitial,
+            ApportInitial = apportInitial,
             SituationProfessionnelle = situation,
             Statut = StatutCandidature.EnAttente,
             DateSoumission = DateTime.UtcNow
@@ -96,11 +98,14 @@ public class CandidatureServices
         return await RechercherAsync(candidature.Id, locataireId, RoleUtilisateur.Locataire);
     }
 
-    public async Task<PagedResultDto<CandidatureResponseDto>> ListerAsync(int utilisateurId, RoleUtilisateur role, int page, int taille)
+    /// <summary>
+    /// Dossiers visibles (locataire : les siens ; bailleur : ceux de ses logements ; admin : tous), paginés, les plus récents
+    /// d'abord (dépôt puis n°). statut : EnAttente, Preselectionnee, Acceptee, ListeAttente, Refusee ou Annulee ;
+    /// appartementId : un seul logement ; q : n° de dossier, nom du candidat ou adresse.
+    /// </summary>
+    public async Task<PagedResultDto<CandidatureResponseDto>> ListerAsync(int utilisateurId, RoleUtilisateur role, Pagination pagination,
+        string? statut = null, int? appartementId = null, string? q = null)
     {
-        if (page < 1) page = 1;
-        if (taille < 1 || taille > 100) taille = 20;
-
         var requete = _context.Candidatures.AsNoTracking().AsQueryable();
 
         if (role == RoleUtilisateur.Locataire)
@@ -111,23 +116,42 @@ public class CandidatureServices
         {
             requete = requete.Where(c => c.Appartement!.BailleurId == utilisateurId);
         }
+        if (!string.IsNullOrWhiteSpace(statut))
+        {
+            if (int.TryParse(statut, out _) || !Enum.TryParse<StatutCandidature>(statut.Trim(), true, out var s) || !Enum.IsDefined(s))
+            {
+                throw new InvalidOperationException("Statut invalide. Utilisez EnAttente, Preselectionnee, Acceptee, ListeAttente, Refusee ou Annulee");
+            }
+            requete = requete.Where(c => c.Statut == s);
+        }
+        if (appartementId is not null)
+        {
+            requete = requete.Where(c => c.AppartementId == appartementId);
+        }
+        if (!string.IsNullOrWhiteSpace(q))
+        {
+            var numero = RechercheTexte.Reference(q);
+            var motif = RechercheTexte.Contient(q);
+            requete = requete.Where(c => c.Id == numero
+                || EF.Functions.ILike(AppDbContext.SansAccents(c.Locataire!.Nom), AppDbContext.SansAccents(motif))
+                || EF.Functions.ILike(AppDbContext.SansAccents(c.Appartement!.Adresse), AppDbContext.SansAccents(motif)));
+        }
 
-        var totalElements = await requete.CountAsync();
-
-        var candidatures = await requete
-            .OrderByDescending(c => c.DateSoumission)
-            .Skip((page - 1) * taille)
-            .Take(taille)
+        // Collections du dossier chargées en requêtes séparées pour la seule page (pas de produit cartésien).
+        var (candidatures, totalElements) = await requete
+            .OrderByDescending(c => c.DateSoumission).ThenByDescending(c => c.Id)
             .Include(c => c.Locataire)
             .Include(c => c.Appartement)
             .Include(c => c.Garant)
             .Include(c => c.Documents)
             .Include(c => c.DemandesComplement)
             .Include(c => c.Visites)
-            .ToListAsync();
+            .AsSplitQuery()
+            .PageAsync(pagination);
 
+        var idsCandidatures = candidatures.Select(c => c.Id).ToList();
         var locationsParCandidature = await _context.Locations
-            .Where(l => l.CandidatureId != null && candidatures.Select(c => c.Id).Contains(l.CandidatureId!.Value))
+            .Where(l => l.CandidatureId != null && idsCandidatures.Contains(l.CandidatureId!.Value))
             .Select(l => new { l.CandidatureId, l.Id, FinancementId = l.FinancementLocation != null ? l.FinancementLocation.Id : (int?)null,
                 l.DateApportPaye, l.DateRemiseCles })
             .ToListAsync();
@@ -139,14 +163,7 @@ public class CandidatureServices
                 dateApportPaye: l?.DateApportPaye, dateRemiseCles: l?.DateRemiseCles);
         }).ToList();
 
-        return new PagedResultDto<CandidatureResponseDto>
-        {
-            Donnees = donnees,
-            PageActuelle = page,
-            TaillePage = taille,
-            TotalElements = totalElements,
-            TotalPages = (int)Math.Ceiling(totalElements / (double)taille)
-        };
+        return PagedResultDto<CandidatureResponseDto>.Creer(donnees, pagination, totalElements);
     }
 
     public async Task<CandidatureResponseDto> RechercherAsync(int id, int utilisateurId, RoleUtilisateur role)
@@ -216,7 +233,9 @@ public class CandidatureServices
         await using var transaction = await _context.Database.BeginTransactionAsync();
         try
         {
-            // Vérifié dans la transaction (verrou d'écriture SQLite) : deux acceptations simultanées ne peuvent pas attribuer le logement deux fois.
+            // Vérifié sous le verrou du logement : deux acceptations simultanées passent l'une après l'autre, la seconde voit
+            // la location créée par la première et ne peut pas attribuer le logement deux fois.
+            await _context.Database.VerrouillerAsync(RessourceVerrouillee.Appartement, candidature.AppartementId);
             if (await _context.Locations.AnyAsync(l => l.AppartementId == candidature.AppartementId && l.Statut == StatutLocation.EnCours))
             {
                 throw new ConflictException("Ce logement est déjà attribué à un autre candidat");
@@ -415,6 +434,15 @@ public class CandidatureServices
     /// </summary>
     private async Task LibererAttributionAsync(Candidature candidature, string motif)
     {
+        // Sous le verrou du logement (comme l'acceptation et l'apport) : un apport enregistré au même instant est vu, et deux
+        // annulations simultanées (désistement + annulation par le bailleur) ne s'appliquent qu'une fois.
+        await using var transaction = await _context.Database.BeginTransactionAsync();
+        await _context.Database.VerrouillerAsync(RessourceVerrouillee.Appartement, candidature.AppartementId);
+        await _context.Entry(candidature).ReloadAsync();
+        if (candidature.Statut != StatutCandidature.Acceptee)
+        {
+            throw new ConflictException("Ce dossier n'est plus attribué");
+        }
         var location = await _context.Locations
             .Include(l => l.FinancementLocation).ThenInclude(f => f!.Mensualites)
             .FirstOrDefaultAsync(l => l.CandidatureId == candidature.Id && l.Statut == StatutLocation.EnCours);
@@ -432,7 +460,6 @@ public class CandidatureServices
             }
         }
 
-        await using var transaction = await _context.Database.BeginTransactionAsync();
         if (location is not null)
         {
             location.Statut = StatutLocation.Resiliee;
@@ -521,6 +548,18 @@ public class CandidatureServices
 
     // --- Après l'attribution : apport puis remise des clés ------------------------------------------------
 
+    /// <summary>Transaction sous le verrou du logement du dossier (dossier introuvable : 404 levée ensuite par la lecture).</summary>
+    private async Task<IDbContextTransaction> DebuterSousVerrouLogementAsync(int candidatureId)
+    {
+        var transaction = await _context.Database.BeginTransactionAsync();
+        var appartementId = await _context.Candidatures.Where(c => c.Id == candidatureId).Select(c => (int?)c.AppartementId).FirstOrDefaultAsync();
+        if (appartementId is not null)
+        {
+            await _context.Database.VerrouillerAsync(RessourceVerrouillee.Appartement, appartementId.Value);
+        }
+        return transaction;
+    }
+
     private async Task<(Candidature Candidature, Location Location)> ChargerAttributionAsync(int id, int utilisateurId, RoleUtilisateur role)
     {
         var candidature = await ChargerPourChangementAsync(id);
@@ -541,6 +580,8 @@ public class CandidatureServices
     /// <summary>Le bailleur enregistre la réception de l'apport prévu au dossier.</summary>
     public async Task<CandidatureResponseDto> EnregistrerApportAsync(int id, EnregistrerApportDto dto, int utilisateurId, RoleUtilisateur role)
     {
+        // Double clic ou désistement simultané : sous le verrou du logement, le second voit le premier.
+        await using var transaction = await DebuterSousVerrouLogementAsync(id);
         var (candidature, location) = await ChargerAttributionAsync(id, utilisateurId, role);
         if (location.DateApportPaye is not null)
         {
@@ -564,6 +605,7 @@ public class CandidatureServices
         location.ModePaiementApport = dto.ModePaiement.Trim();
         location.ReferenceApport = string.IsNullOrWhiteSpace(dto.Reference) ? null : dto.Reference.Trim();
         await _context.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         await _notificationServices.ApportRecuAsync(candidature.Locataire!, candidature, candidature.Appartement!, location);
         return VersDtoAttribution(candidature, location);
@@ -572,6 +614,7 @@ public class CandidatureServices
     /// <summary>Le bailleur remet les clés : possible seulement une fois l'apport payé. La location démarre ce jour-là.</summary>
     public async Task<CandidatureResponseDto> RemettreClesAsync(int id, RemiseClesDto dto, int utilisateurId, RoleUtilisateur role)
     {
+        await using var transaction = await DebuterSousVerrouLogementAsync(id);
         var (candidature, location) = await ChargerAttributionAsync(id, utilisateurId, role);
         if (location.DateApportPaye is null)
         {
@@ -589,6 +632,7 @@ public class CandidatureServices
         location.DateRemiseCles = dto.DateRemise.Date;
         location.DateDebut = dto.DateRemise.Date;
         await _context.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         await _notificationServices.ClesRemisesAsync(candidature.Locataire!, candidature, candidature.Appartement!, location);
         return VersDtoAttribution(candidature, location);

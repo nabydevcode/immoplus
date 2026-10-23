@@ -5,7 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 
 /// <summary>
-/// Sérialisation JSON des dates : toutes les dates de l'API sont en UTC, mais SQLite les relit sans fuseau (Kind = Unspecified).
+/// Sérialisation JSON des dates : toutes les dates de l'API sont en UTC (colonnes « timestamp without time zone », voir AppDbContext).
 /// Les horodatages sont donc écrits avec « Z » (ex. « 2026-10-13T09:41:12.1234567Z ») pour que le client les convertisse
 /// à l'heure locale. Les dates « jour » (minuit pile : arrivée, départ, échéance…) restent « yyyy-MM-ddT00:00:00 », sans « Z »,
 /// pour ne jamais se décaler d'un jour dans un fuseau négatif. La lecture est inchangée (comportement par défaut).

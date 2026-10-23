@@ -1,0 +1,26 @@
+# Prometheus du profil « supervision » (docker compose --profile supervision up -d) : http://localhost:9090 (127.0.0.1 seulement).
+# Lit /metriques des API directement sur le réseau Docker (jamais via nginx, qui ne publie pas /metriques).
+global:
+  scrape_interval: 10s
+  scrape_timeout: 5s
+
+scrape_configs:
+  # Instances Release du profil « echelle » : jeton obligatoire (infra/metriques.env, écrit dans un fichier temporaire
+  # du conteneur par le point d'entrée de prometheus, jamais dans ce fichier versionné).
+  - job_name: immoplus-api-echelle
+    metrics_path: /metriques
+    authorization:
+      type: Bearer
+      credentials_file: /tmp/jeton-metriques
+    static_configs:
+      - targets: ["api-echelle-1:8080", "api-echelle-2:8080"]
+
+  # API de développement (dotnet watch) : pas de jeton, /metriques ouvert aux réseaux privés (dont Docker).
+  - job_name: immoplus-api-dev
+    metrics_path: /metriques
+    static_configs:
+      - targets: ["api:5107"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

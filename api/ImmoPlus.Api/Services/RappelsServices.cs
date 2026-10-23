@@ -10,7 +10,9 @@ using ImmoPlus.Api.Models.Enums;
 /// <summary>
 /// Rappels automatiques des échéances (mensualités du financement et loyers) :
 /// rappel quand l'échéance tombe dans les 3 jours, alerte dès le 1er jour de retard puis chaque semaine,
-/// et récapitulatif quotidien des retards aux admins. Chaque envoi réussi est mémorisé pour ne jamais faire de doublon.
+/// et récapitulatif quotidien des retards aux admins. Chaque email mis en file (boîte d'envoi) est mémorisé dans la même
+/// transaction : jamais de doublon, et la boîte d'envoi se charge des nouvelles tentatives.
+/// Un seul exécutant à la fois sur toutes les instances de l'API (VerrouPlanifie, verrou consultatif PostgreSQL).
 /// </summary>
 public class RappelsServices
 {
@@ -18,8 +20,8 @@ public class RappelsServices
     private const int JoursEntreAlertesRetard = 7;
     private static readonly CultureInfo Fr = CultureInfo.GetCultureInfo("fr-FR");
 
-    // Le service planifié et la route admin peuvent se croiser : une seule exécution à la fois, sinon doublons.
-    private static readonly SemaphoreSlim Verrou = new(1, 1);
+    /// <summary>Nom du traitement dans ExecutionsPlanifiees.</summary>
+    public const string NomExecution = "rappels";
 
     private readonly AppDbContext _context;
     private readonly LoyerServices _loyerServices;
@@ -27,10 +29,12 @@ public class RappelsServices
     private readonly ReservationServices _reservationServices;
     private readonly LiensFrontend _liens;
     private readonly JournalServices _journal;
+    private readonly BoiteEnvoiServices _boite;
 
     public RappelsServices(AppDbContext context, LoyerServices loyerServices, NotificationServices notificationServices,
-        ReservationServices reservationServices, LiensFrontend liens, JournalServices journal)
+        ReservationServices reservationServices, LiensFrontend liens, JournalServices journal, BoiteEnvoiServices boite)
     {
+        _boite = boite;
         _journal = journal;
         _liens = liens;
         _context = context;
@@ -39,106 +43,148 @@ public class RappelsServices
         _reservationServices = reservationServices;
     }
 
+    /// <summary>Exécution demandée par un admin : attend la fin d'un passage en cours (sur n'importe quelle instance), puis s'exécute.</summary>
     public async Task<RappelsResultatDto> ExecuterAsync(CancellationToken annulation = default)
+    {
+        await using var verrou = await VerrouPlanifie.AttendreAsync(ChaineConnexion, VerrouPlanifie.Rappels, annulation);
+        return await ExecuterSousVerrouAsync(annulation);
+    }
+
+    /// <summary>
+    /// Passage planifié : rien si une autre instance travaille déjà, ou si le dernier passage (toutes instances confondues)
+    /// date de moins de <paramref name="intervalle"/> (marge de 5 min). null si rien n'a été exécuté.
+    /// </summary>
+    public async Task<RappelsResultatDto?> ExecuterSiDuAsync(TimeSpan intervalle, CancellationToken annulation = default)
+    {
+        await using var verrou = await VerrouPlanifie.EssayerAsync(ChaineConnexion, VerrouPlanifie.Rappels, annulation);
+        if (verrou is null)
+        {
+            return null;
+        }
+        var derniere = await _context.ExecutionsPlanifiees.AsNoTracking()
+            .Where(e => e.Nom == NomExecution).Select(e => (DateTime?)e.DerniereExecution).FirstOrDefaultAsync(annulation);
+        if (derniere is { } date && DateTime.UtcNow - date < intervalle - TimeSpan.FromMinutes(5))
+        {
+            return null;
+        }
+        return await ExecuterSousVerrouAsync(annulation);
+    }
+
+    private string ChaineConnexion => _context.Database.GetConnectionString()
+        ?? throw new InvalidOperationException("Chaîne de connexion PostgreSQL introuvable");
+
+    private async Task<RappelsResultatDto> ExecuterSousVerrouAsync(CancellationToken annulation)
     {
         // Emails planifiés : liens vers Frontend:Url, même lancés depuis la route admin (pas l'origine de l'admin).
         _liens.UtiliserUrlConfiguree = true;
-        await Verrou.WaitAsync(annulation);
-        try
+        var resultat = new RappelsResultatDto();
+        var maintenant = DateTime.UtcNow;
+        var aujourdhui = maintenant.Date;
+        var retards = new List<NotificationServices.LigneRetard>();
+
+        // Demandes de séjour sans réponse de l'hôte : refusées au bout de 48 h pour libérer les dates.
+        resultat.DemandesReservationExpirees = await _reservationServices.ExpirerDemandesAsync(annulation);
+        // Réservations acceptées (ou instantanées) restées sans paiement 24 h : annulées pour libérer les dates.
+        resultat.ReservationsImpayeesAnnulees = await _reservationServices.ExpirerImpayeesAsync(annulation: annulation);
+        // Séjours confirmés dont le départ est passé : terminés, avec l'invitation à laisser un avis.
+        resultat.SejoursTermines = await _reservationServices.TerminerSejoursAsync(annulation: annulation);
+
+        // Veille de l'arrivée : instructions au voyageur et copie courte à l'hôte, une seule fois par séjour.
+        resultat.InstructionsArrivee = await EnvoyerInstructionsArriveeAsync(aujourdhui, maintenant, annulation);
+
+        // Les loyers sont créés à la demande : on crée ceux du mois avant de chercher les échéances.
+        await _loyerServices.GarantirLoyersLocationsEnCoursAsync(annulation);
+
+        // Emails mis en file et dates de rappel enregistrés ensemble (boîte d'envoi dans cette transaction).
+        await using var transaction = await _context.Database.BeginTransactionAsync(annulation);
+
+        var mensualites = await _context.Mensualites
+            .Include(m => m.FinancementLocation).ThenInclude(f => f!.Location).ThenInclude(l => l!.Locataire)
+            .Include(m => m.FinancementLocation).ThenInclude(f => f!.Location).ThenInclude(l => l!.Appartement)
+            .Where(m => m.FinancementLocation!.Statut == StatutFinancement.EnCours
+                && m.Statut != StatutMensualite.Payee
+                && m.DateEcheance <= aujourdhui.AddDays(JoursAvantEcheance + 1))
+            .ToListAsync(annulation);
+
+        foreach (var m in mensualites.Where(m => m.MontantPaye < m.MontantDu).OrderBy(m => m.DateEcheance))
         {
-            var resultat = new RappelsResultatDto();
-            var maintenant = DateTime.UtcNow;
-            var aujourdhui = maintenant.Date;
-            var retards = new List<NotificationServices.LigneRetard>();
+            var financement = m.FinancementLocation!;
+            var location = financement.Location!;
+            var libelle = $"mensualité n° {m.NumeroEcheance} du financement n° {financement.Id:D6}";
+            var (rappel, retard) = await TraiterAsync(location, libelle, m.DateEcheance, m.MontantDu - m.MontantPaye,
+                m.DateRappelEcheance, m.DateDernierRappelRetard, aujourdhui, retards);
+            if (rappel) { m.DateRappelEcheance = maintenant; resultat.RappelsMensualites++; }
+            if (retard) { m.DateDernierRappelRetard = maintenant; resultat.RetardsMensualites++; }
+        }
 
-            // Demandes de séjour sans réponse de l'hôte : refusées au bout de 48 h pour libérer les dates.
-            resultat.DemandesReservationExpirees = await _reservationServices.ExpirerDemandesAsync(annulation);
-            // Réservations acceptées (ou instantanées) restées sans paiement 24 h : annulées pour libérer les dates.
-            resultat.ReservationsImpayeesAnnulees = await _reservationServices.ExpirerImpayeesAsync(annulation: annulation);
-            // Séjours confirmés dont le départ est passé : terminés, avec l'invitation à laisser un avis.
-            resultat.SejoursTermines = await _reservationServices.TerminerSejoursAsync(annulation: annulation);
+        var loyers = await _context.Loyers
+            .Include(l => l.Location).ThenInclude(l => l!.Locataire)
+            .Include(l => l.Location).ThenInclude(l => l!.Appartement)
+            .Where(l => l.Location!.Statut == StatutLocation.EnCours
+                && l.Statut != StatutMensualite.Payee
+                && l.DateEcheance <= aujourdhui.AddDays(JoursAvantEcheance + 1))
+            .ToListAsync(annulation);
 
-            // Veille de l'arrivée : instructions au voyageur et copie courte à l'hôte, une seule fois par séjour.
-            resultat.InstructionsArrivee = await EnvoyerInstructionsArriveeAsync(aujourdhui, maintenant, annulation);
+        foreach (var l in loyers.Where(l => l.MontantPaye < l.MontantDu).OrderBy(l => l.DateEcheance))
+        {
+            var libelle = $"loyer {DuMois(l.DateEcheance)}";
+            var (rappel, retard) = await TraiterAsync(l.Location!, libelle, l.DateEcheance, l.MontantDu - l.MontantPaye,
+                l.DateRappelEcheance, l.DateDernierRappelRetard, aujourdhui, retards);
+            if (rappel) { l.DateRappelEcheance = maintenant; resultat.RappelsLoyers++; }
+            if (retard) { l.DateDernierRappelRetard = maintenant; resultat.RetardsLoyers++; }
+        }
 
-            // Les loyers sont créés à la demande : on crée ceux du mois avant de chercher les échéances.
-            await _loyerServices.GarantirLoyersLocationsEnCoursAsync(annulation);
+        // Mémorisé au fur et à mesure du traitement, enregistré avant le récapitulatif.
+        await _context.SaveChangesAsync(annulation);
 
-            var mensualites = await _context.Mensualites
-                .Include(m => m.FinancementLocation).ThenInclude(f => f!.Location).ThenInclude(l => l!.Locataire)
-                .Include(m => m.FinancementLocation).ThenInclude(f => f!.Location).ThenInclude(l => l!.Appartement)
-                .Where(m => m.FinancementLocation!.Statut == StatutFinancement.EnCours
-                    && m.Statut != StatutMensualite.Payee
-                    && m.DateEcheance <= aujourdhui.AddDays(JoursAvantEcheance + 1))
+        resultat.EcheancesEnRetard = retards.Count;
+        if (retards.Count > 0)
+        {
+            var admins = await _context.Utilisateurs
+                .Where(u => u.Role == RoleUtilisateur.Admin && u.Statut == StatutUtilisateur.Valide)
                 .ToListAsync(annulation);
-
-            foreach (var m in mensualites.Where(m => m.MontantPaye < m.MontantDu).OrderBy(m => m.DateEcheance))
+            var tries = retards.OrderByDescending(r => r.JoursRetard).ToList();
+            foreach (var admin in admins.Where(a => a.DateDernierRecapRetards?.Date != aujourdhui))
             {
-                var financement = m.FinancementLocation!;
-                var location = financement.Location!;
-                var libelle = $"mensualité n° {m.NumeroEcheance} du financement n° {financement.Id:D6}";
-                var (rappel, retard) = await TraiterAsync(location, libelle, m.DateEcheance, m.MontantDu - m.MontantPaye,
-                    m.DateRappelEcheance, m.DateDernierRappelRetard, aujourdhui, retards);
-                if (rappel) { m.DateRappelEcheance = maintenant; resultat.RappelsMensualites++; }
-                if (retard) { m.DateDernierRappelRetard = maintenant; resultat.RetardsMensualites++; }
-            }
-
-            var loyers = await _context.Loyers
-                .Include(l => l.Location).ThenInclude(l => l!.Locataire)
-                .Include(l => l.Location).ThenInclude(l => l!.Appartement)
-                .Where(l => l.Location!.Statut == StatutLocation.EnCours
-                    && l.Statut != StatutMensualite.Payee
-                    && l.DateEcheance <= aujourdhui.AddDays(JoursAvantEcheance + 1))
-                .ToListAsync(annulation);
-
-            foreach (var l in loyers.Where(l => l.MontantPaye < l.MontantDu).OrderBy(l => l.DateEcheance))
-            {
-                var libelle = $"loyer {DuMois(l.DateEcheance)}";
-                var (rappel, retard) = await TraiterAsync(l.Location!, libelle, l.DateEcheance, l.MontantDu - l.MontantPaye,
-                    l.DateRappelEcheance, l.DateDernierRappelRetard, aujourdhui, retards);
-                if (rappel) { l.DateRappelEcheance = maintenant; resultat.RappelsLoyers++; }
-                if (retard) { l.DateDernierRappelRetard = maintenant; resultat.RetardsLoyers++; }
-            }
-
-            // Mémorisé au fur et à mesure du traitement, enregistré avant le récapitulatif.
-            await _context.SaveChangesAsync(annulation);
-
-            resultat.EcheancesEnRetard = retards.Count;
-            if (retards.Count > 0)
-            {
-                var admins = await _context.Utilisateurs
-                    .Where(u => u.Role == RoleUtilisateur.Admin && u.Statut == StatutUtilisateur.Valide)
-                    .ToListAsync(annulation);
-                var tries = retards.OrderByDescending(r => r.JoursRetard).ToList();
-                foreach (var admin in admins.Where(a => a.DateDernierRecapRetards?.Date != aujourdhui))
+                if (await _notificationServices.RecapitulatifRetardsAsync(admin, tries))
                 {
-                    if (await _notificationServices.RecapitulatifRetardsAsync(admin, tries))
-                    {
-                        admin.DateDernierRecapRetards = maintenant;
-                        resultat.RecapitulatifsAdmin++;
-                    }
+                    admin.DateDernierRecapRetards = maintenant;
+                    resultat.RecapitulatifsAdmin++;
                 }
-                await _context.SaveChangesAsync(annulation);
             }
-
-            // Journal des actions : conservé 2 ans.
-            resultat.JournalPurge = await _journal.PurgerAsync(annulation);
-
-            return resultat;
+            await _context.SaveChangesAsync(annulation);
         }
-        finally
+        await transaction.CommitAsync(annulation);
+
+        // Journal des actions : conservé 2 ans ; boîte d'envoi : messages traités conservés 90 jours.
+        resultat.JournalPurge = await _journal.PurgerAsync(annulation);
+        resultat.MessagesPurges = await _boite.PurgerAsync(annulation);
+
+        await EnregistrerExecutionAsync(annulation);
+        return resultat;
+    }
+
+    private async Task EnregistrerExecutionAsync(CancellationToken annulation)
+    {
+        var execution = await _context.ExecutionsPlanifiees.FirstOrDefaultAsync(e => e.Nom == NomExecution, annulation);
+        if (execution is null)
         {
-            Verrou.Release();
+            execution = new ExecutionPlanifiee { Nom = NomExecution };
+            _context.ExecutionsPlanifiees.Add(execution);
         }
+        execution.DerniereExecution = DateTime.UtcNow;
+        execution.Instance = Environment.MachineName.Length > 100 ? Environment.MachineName[..100] : Environment.MachineName;
+        await _context.SaveChangesAsync(annulation);
     }
 
     /// <summary>
     /// Séjours confirmés qui commencent demain : email « Votre arrivée demain » au voyageur (adresse, heures, instructions,
-    /// téléphone de l'hôte) et copie courte à l'hôte. Mémorisé dans DateEnvoiInstructions seulement si l'envoi au voyageur réussit.
+    /// téléphone de l'hôte) et copie courte à l'hôte. Mémorisé dans DateEnvoiInstructions, dans la même transaction que la mise en file.
     /// </summary>
     private async Task<int> EnvoyerInstructionsArriveeAsync(DateTime aujourdhui, DateTime maintenant, CancellationToken annulation)
     {
         var demain = aujourdhui.AddDays(1);
+        await using var transaction = await _context.Database.BeginTransactionAsync(annulation);
         var reservations = await _context.Reservations
             .Include(r => r.Locataire)
             .Include(r => r.Appartement).ThenInclude(a => a!.Bailleur)
@@ -162,11 +208,12 @@ public class RappelsServices
             await _notificationServices.ArriveeDemainHoteAsync(hote, r, appartement, r.Locataire!);
         }
         await _context.SaveChangesAsync(annulation);
+        await transaction.CommitAsync(annulation);
         return envoyes;
     }
 
     /// <summary>Envoie, si besoin, le rappel avant échéance ou l'alerte de retard d'une échéance non réglée.</summary>
-    /// <returns>Quels emails sont effectivement partis (à mémoriser par l'appelant).</returns>
+    /// <returns>Quels emails ont été mis en file (à mémoriser par l'appelant, dans la même transaction).</returns>
     private async Task<(bool Rappel, bool Retard)> TraiterAsync(Location location, string libelle, DateTime dateEcheance, decimal resteDu,
         DateTime? dateRappel, DateTime? dateDernierRetard, DateTime aujourdhui, List<NotificationServices.LigneRetard> retards)
     {
@@ -199,7 +246,9 @@ public class RappelsServices
 }
 
 /// <summary>
-/// Lance les rappels au démarrage puis toutes les 24 h (Rappels:IntervalleHeures), sauf si Rappels:Actif vaut false.
+/// Rappels toutes les 24 h (Rappels:IntervalleHeures), sauf si Rappels:Actif vaut false. Chaque instance vérifie toutes les
+/// 15 min au plus (Rappels:VerificationMinutes) si un passage est dû : le verrou PostgreSQL et la date du dernier passage
+/// (ExecutionsPlanifiees) garantissent un seul passage par intervalle sur l'ensemble des instances, même après un redémarrage.
 /// Une erreur est journalisée et n'arrête ni l'API ni les exécutions suivantes.
 /// </summary>
 public class RappelsHostedService : BackgroundService
@@ -223,6 +272,7 @@ public class RappelsHostedService : BackgroundService
             return;
         }
         var intervalle = TimeSpan.FromHours(Math.Max(1, _configuration.GetValue("Rappels:IntervalleHeures", 24.0)));
+        var verification = TimeSpan.FromMinutes(Math.Clamp(_configuration.GetValue("Rappels:VerificationMinutes", 15.0), 1, intervalle.TotalMinutes));
 
         // Ne pas retarder le démarrage de l'API.
         await Task.Yield();
@@ -231,9 +281,12 @@ public class RappelsHostedService : BackgroundService
             try
             {
                 using var scope = _scopeFactory.CreateScope();
-                var resultat = await scope.ServiceProvider.GetRequiredService<RappelsServices>().ExecuterAsync(stoppingToken);
-                _logger.LogInformation("Rappels des échéances : {Total} email(s) envoyé(s), {Retards} échéance(s) en retard",
-                    resultat.Total, resultat.EcheancesEnRetard);
+                var resultat = await scope.ServiceProvider.GetRequiredService<RappelsServices>().ExecuterSiDuAsync(intervalle, stoppingToken);
+                if (resultat is not null)
+                {
+                    _logger.LogInformation("Rappels des échéances : {Total} email(s) mis en file, {Retards} échéance(s) en retard",
+                        resultat.Total, resultat.EcheancesEnRetard);
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -246,7 +299,7 @@ public class RappelsHostedService : BackgroundService
 
             try
             {
-                await Task.Delay(intervalle, stoppingToken);
+                await Task.Delay(verification, stoppingToken);
             }
             catch (OperationCanceledException)
             {

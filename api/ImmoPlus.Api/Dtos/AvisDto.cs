@@ -51,7 +51,12 @@ public class ListeAvisDto
     public int Nombre { get; set; }
     /// <summary>null s'il n'y a aucun avis (et toujours null pour les avis reçus par un voyageur).</summary>
     public MoyennesAvisDto? Moyennes { get; set; }
+    /// <summary>Avis de la page demandée (GET appartement/{id}/avis) ; tous les avis pour les avis reçus par un utilisateur.</summary>
     public List<AvisDto> Avis { get; set; } = new();
+    /// <summary>Pagination de GET appartement/{id}/avis (Nombre = total des avis) ; null pour les avis d'un utilisateur (non paginés).</summary>
+    public int? PageActuelle { get; set; }
+    public int? TaillePage { get; set; }
+    public int? TotalPages { get; set; }
 }
 
 /// <summary>Badges de confiance d'un hôte, calculés à la volée (rien n'est stocké).</summary>

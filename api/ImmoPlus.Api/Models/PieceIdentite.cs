@@ -8,7 +8,7 @@ public class PieceIdentite
     public int Id { get; set; }
     public int UtilisateurId { get; set; }
     public TypePieceIdentite Type { get; set; }
-    /// <summary>Recto, relatif à Storage/identites (« {userId}/{guid}.jpg|pdf ») : jamais servi publiquement.</summary>
+    /// <summary>Recto, relatif à « identites/ » (clé de stockage) (« {userId}/{guid}.jpg|pdf ») : jamais servi publiquement.</summary>
     public string Chemin { get; set; } = string.Empty;
     public string? CheminVerso { get; set; }
     public StatutPieceIdentite Statut { get; set; } = StatutPieceIdentite.EnAttente;

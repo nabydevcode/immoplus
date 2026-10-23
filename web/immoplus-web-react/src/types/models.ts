@@ -587,7 +587,7 @@ export interface RemboursementAEffectuerDto {
 
 /** Sauvegarde de la base (GET admin/sauvegardes). */
 export interface SauvegardeDto {
-  /** Nom du fichier (immoplus-AAAAMMJJ-HHmm.db), à utiliser pour le téléchargement. */
+  /** Nom du fichier (immoplus-AAAAMMJJ-HHMM.dump, format pg_dump), à utiliser pour le téléchargement. */
   nom: string;
   /** Taille en octets. */
   taille: number;
@@ -613,6 +613,33 @@ export interface NotificationSmsDto {
   dateEnvoi: string;
   /** Événement déclencheur, ex. « reservation-confirmee ». */
   evenement: string;
+}
+
+export type TypeMessageSortant = "Email" | "Sms";
+export type StatutMessageSortant = "EnAttente" | "Envoye" | "Echec" | "Abandonne";
+
+/** Message de la boîte d'envoi des emails / SMS (GET admin/messages-sortants). Horodatages UTC. */
+export interface MessageSortantDto {
+  id: number;
+  type: TypeMessageSortant;
+  /** Adresse email ou téléphone. */
+  destinataire: string;
+  utilisateurId: number | null;
+  /** Objet de l'email (null pour un SMS). */
+  sujet: string | null;
+  /** Texte du SMS (null pour un email). */
+  texte: string | null;
+  /** Ex. « Dossier n° 000048 ». */
+  reference: string | null;
+  evenement: string;
+  statut: StatutMessageSortant;
+  tentatives: number;
+  /** Prochain essai (EnAttente / Echec uniquement). */
+  prochaineTentative: string | null;
+  derniereErreur: string | null;
+  dateCreation: string;
+  dateDerniereTentative: string | null;
+  dateEnvoi: string | null;
 }
 
 /** Action enregistrée dans le journal d'audit (GET admin/journal). */

@@ -1,8 +1,8 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { AlertCircle, List, Map as IconeCarte, SearchX, X } from "lucide-react";
-import { apiClient } from "../api/client";
-import { messageErreur } from "../components/admin/outils";
+import { useListeProgressive } from "../components/admin/pagination";
+import { VoirPlus } from "../components/admin/ui";
 import type { AppartementDto } from "../types/models";
 import CarteAnnonce from "../components/appartements/CarteAnnonce";
 import BarreRecherche from "../components/sejour/BarreRecherche";
@@ -24,6 +24,10 @@ const CRITERES_LONGUE_DUREE = [
   "equipements",
   ...CLES_ZONE,
 ];
+
+const TAILLE_LISTE = 24;
+/** Maximum accepté par l'API pour la vue carte. */
+const TAILLE_CARTE = 200;
 
 function CarteSquelette() {
   return (
@@ -52,20 +56,20 @@ export default function Annonces() {
     if (valeur) criteres.set(cle, valeur);
   }
   const requete = criteres.toString();
-  const cleRecherche = `${typeOffreApi}?${requete}`;
-  // Dernier résultat reçu, avec la recherche qui l'a produit : la liste précédente reste disponible
-  // (la vue carte la garde affichée) pendant le chargement de la suivante.
-  const [resultat, setResultat] = useState<{
-    cle: string;
-    appartements: AppartementDto[] | null;
-    erreur: string | null;
-  } | null>(null);
-  const chargement = resultat?.cle !== cleRecherche;
-  const appartements = resultat?.appartements ?? null;
-  const erreur = chargement ? null : (resultat?.erreur ?? null);
+  const vue = parametres.get("vue") === "carte" ? "carte" : "liste";
+  // Liste : pages de 24 annonces (« Voir plus ») ; carte : les logements de la zone, jusqu'à 200 d'un coup.
+  const taille = vue === "carte" ? TAILLE_CARTE : TAILLE_LISTE;
+  const liste = useListeProgressive<AppartementDto>(
+    // Les logements loués ou retirés par leur bailleur ne sont pas proposés aux locataires.
+    `appartement/lister?typeOffre=${typeOffreApi}&disponible=true${requete ? `&${requete}` : ""}`,
+    taille,
+  );
+  const chargement = liste.chargement;
+  // Pendant une nouvelle recherche, la carte garde les logements précédents (et son cadrage).
+  const appartements = chargement ? liste.derniers : liste.elements;
+  const erreur = liste.erreur;
   const enRecherche = requete !== "";
   const suffixe = estLongueDuree ? "" : suffixeSejour(parametres);
-  const vue = parametres.get("vue") === "carte" ? "carte" : "liste";
   const zone = zoneDepuisUrl(parametres);
 
   /** Modifie l'URL en gardant la vue (liste/carte) choisie. */
@@ -96,30 +100,6 @@ export default function Annonces() {
     setParametres(suivants);
   };
 
-  useEffect(() => {
-    let annule = false;
-    apiClient
-      // Les logements loués ou retirés par leur bailleur ne sont pas proposés aux locataires.
-      .get<AppartementDto[]>(
-        `appartement/lister?typeOffre=${typeOffreApi}&disponible=true${requete ? `&${requete}` : ""}`,
-      )
-      .then((data) => {
-        if (!annule) setResultat({ cle: `${typeOffreApi}?${requete}`, appartements: data, erreur: null });
-      })
-      .catch((err) => {
-        if (!annule)
-          setResultat((r) => ({
-            cle: `${typeOffreApi}?${requete}`,
-            appartements: r?.appartements ?? null,
-            erreur: messageErreur(err, "Impossible de charger les annonces pour le moment."),
-          }));
-      });
-
-    return () => {
-      annule = true;
-    };
-  }, [typeOffreApi, requete]);
-
   return (
     <div className="px-6 py-10">
       <div className="max-w-6xl mx-auto">
@@ -146,7 +126,7 @@ export default function Annonces() {
         <p className="text-gray-500 text-sm mb-8">
           {chargement
             ? "Recherche en cours..."
-            : `${appartements?.length ?? 0} annonce(s) ${enRecherche ? "correspondant à votre recherche" : "disponible(s)"}`}
+            : `${liste.total} annonce${liste.total > 1 ? "s" : ""} ${enRecherche ? "correspondant à votre recherche" : `disponible${liste.total > 1 ? "s" : ""}`}`}
         </p>
 
         {estLongueDuree ? (
@@ -199,13 +179,19 @@ export default function Annonces() {
               <CarteSquelette key={i} />
             ))}
           </div>
-        ) : erreur ? (
+        ) : erreur && !liste.elements.length ? (
           <div className="flex flex-col items-center text-center gap-3 bg-white rounded-2xl border border-red-100 py-16 px-6">
             <AlertCircle className="text-red-500" size={32} />
             <p className="text-red-600 font-medium">{erreur}</p>
           </div>
         ) : vue === "carte" ? (
           <Suspense fallback={<div className="h-[60vh] min-h-80 rounded-2xl bg-gray-200 animate-pulse" />}>
+            {!chargement && liste.total > liste.elements.length && (
+              <p className="text-sm bg-immo-gold/15 rounded-xl px-4 py-3 mb-3">
+                {liste.elements.length} logements affichés sur {liste.total} : zoomez puis « Rechercher dans cette zone
+                » pour voir les autres.
+              </p>
+            )}
             <CarteAnnonces
               appartements={appartements ?? []}
               lienFiche={(a) => `/annonces/${type}/${a.id}${suffixe}`}
@@ -214,11 +200,22 @@ export default function Annonces() {
             />
           </Suspense>
         ) : appartements && appartements.length > 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {appartements.map((a) => (
-              <CarteAnnonce key={a.id} appartement={a} lien={`/annonces/${type}/${a.id}${suffixe}`} />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {appartements.map((a) => (
+                <CarteAnnonce key={a.id} appartement={a} lien={`/annonces/${type}/${a.id}${suffixe}`} />
+              ))}
+            </div>
+            <VoirPlus
+              aPlus={liste.aPlus}
+              chargement={liste.chargementPlus}
+              onClick={liste.chargerPlus}
+              affiches={liste.elements.length}
+              total={liste.total}
+              libelle="Voir plus d'annonces"
+            />
+            {erreur && <p className="text-center text-sm text-red-600 mt-3">{erreur}</p>}
+          </>
         ) : (
           <div className="flex flex-col items-center text-center gap-3 bg-white rounded-2xl border border-black/5 py-16 px-6">
             <SearchX className="text-gray-300" size={36} />

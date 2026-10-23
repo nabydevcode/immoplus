@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react";
+import { Fragment, Suspense, useState } from "react";
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 import {
   Building2,
@@ -15,6 +15,7 @@ import {
   LogOut,
   Menu,
   MessageSquareText,
+  Send,
   ScrollText,
   ShieldAlert,
   UserRound,
@@ -51,6 +52,7 @@ const sections: {
   // Outils techniques, séparés de la gestion courante par un intertitre.
   { to: "/admin/sauvegardes", label: "Sauvegardes", icone: DatabaseBackup, groupe: "Système" },
   { to: "/admin/sms", label: "SMS envoyés", icone: MessageSquareText },
+  { to: "/admin/messages-sortants", label: "Messages sortants", icone: Send },
   { to: "/admin/profil", label: "Mon profil", icone: UserRound, groupe: "Compte" },
 ];
 
@@ -187,7 +189,9 @@ export default function AdminLayout() {
           <span className="text-immo-cream font-extrabold">ImmoPlus Admin</span>
         </header>
         <main className="px-4 sm:px-8 py-8 max-w-7xl">
-          <Outlet />
+          <Suspense fallback={<p className="text-gray-500 text-sm">Chargement...</p>}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
     </div>
