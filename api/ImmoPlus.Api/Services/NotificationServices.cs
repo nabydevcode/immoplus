@@ -16,17 +16,15 @@ public class NotificationServices
 {
     private static readonly CultureInfo Fr = CultureInfo.GetCultureInfo("fr-FR");
 
-    private readonly EmailServices _emailServices;
     private readonly LiensFrontend _liens;
     private readonly SmsServices _sms;
     private readonly ILogger<NotificationServices> _logger;
     private readonly BoiteEnvoiServices _boite;
 
-    public NotificationServices(EmailServices emailServices, LiensFrontend liens, SmsServices sms, ILogger<NotificationServices> logger,
+    public NotificationServices(LiensFrontend liens, SmsServices sms, ILogger<NotificationServices> logger,
         BoiteEnvoiServices boite)
     {
         _boite = boite;
-        _emailServices = emailServices;
         _liens = liens;
         _sms = sms;
         _logger = logger;
@@ -852,7 +850,7 @@ public class NotificationServices
 
     /// <returns>
     /// true si l'email est mis en file (les rappels le mémorisent alors comme traité : la boîte d'envoi se charge des nouvelles
-    /// tentatives, sans double envoi) ; false si SMTP n'est pas configuré ou si la mise en file a échoué.
+    /// tentatives, sans double envoi ; SMTP non configuré : l'email y attend sa configuration) ; false si la mise en file a échoué.
     /// </returns>
     /// <param name="chemin">Page du site ouverte par le lien de l'email (accueil par défaut).</param>
     private async Task<bool> EnvoyerAsync(Utilisateur destinataire, ReferenceEmail? reference, string sujet, string titre, string contenu, string prochaineEtape,
@@ -865,12 +863,6 @@ public class NotificationServices
         var encadreReference = reference is { } re
             ? $"""<p style="display:inline-block;background:#f5f2ea;border:1px solid #e8dcc0;border-radius:6px;padding:6px 12px;margin:0 0 16px;font-size:14px">Référence {re.Complement} : <strong>n° {re.Numero:D6}</strong></p>"""
             : "";
-
-        if (!_emailServices.EstConfigure)
-        {
-            _logger.LogWarning("SMTP non configuré, email « {Sujet} » non envoyé à {Email}", sujet, destinataire.Email);
-            return false;
-        }
 
         var urlFrontend = _liens.Url;
         var html = $"""

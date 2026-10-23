@@ -11,7 +11,7 @@ public sealed record EmailCapture(string Destinataire, string Sujet, string Corp
 
 /// <summary>
 /// Serveur SMTP minimal en mémoire, sur un port libre de la boucle locale : l'API y envoie ses emails comme à un vrai serveur,
-/// les tests lisent ensuite ce qui a été « envoyé ». Suffisant pour System.Net.Mail.SmtpClient (EHLO, MAIL, RCPT, DATA, QUIT).
+/// les tests lisent ensuite ce qui a été « envoyé ». Suffisant pour le client MailKit de l'API (EHLO, AUTH PLAIN, MAIL, RCPT, DATA, QUIT), sans TLS.
 /// </summary>
 public sealed class FauxServeurSmtp : IAsyncDisposable
 {
@@ -35,6 +35,13 @@ public sealed class FauxServeurSmtp : IAsyncDisposable
     public void RefuserProchainsEnvois(int nombre) => Interlocked.Exchange(ref _refusAVenir, nombre);
 
     public IReadOnlyList<EmailCapture> Emails => _emails.ToArray();
+
+    /// <summary>Renseigné : AUTH PLAIN proposé et exigé avant MAIL FROM (530 sinon, 535 si identifiants faux).</summary>
+    public (string Utilisateur, string MotDePasse)? IdentifiantsExiges { get; set; }
+
+    private int _authentificationsReussies;
+
+    public int AuthentificationsReussies => Volatile.Read(ref _authentificationsReussies);
 
     public IReadOnlyList<EmailCapture> EmailsPour(string destinataire) =>
         _emails.Where(e => string.Equals(e.Destinataire, destinataire, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -66,16 +73,52 @@ public sealed class FauxServeurSmtp : IAsyncDisposable
             await using var ecrivain = new StreamWriter(flux, Encoding.ASCII) { NewLine = "\r\n", AutoFlush = true };
             await ecrivain.WriteLineAsync("220 faux-smtp.immoplus.test");
             var destinataires = new List<string>();
+            var identifiants = IdentifiantsExiges;
+            var authentifie = identifiants is null;
             while (await lecteur.ReadLineAsync() is { } ligne)
             {
                 var commande = ligne.ToUpperInvariant();
                 if (commande.StartsWith("EHLO") || commande.StartsWith("HELO"))
                 {
-                    await ecrivain.WriteLineAsync("250 faux-smtp.immoplus.test");
+                    if (identifiants is not null)
+                    {
+                        await ecrivain.WriteLineAsync("250-faux-smtp.immoplus.test");
+                        await ecrivain.WriteLineAsync("250 AUTH PLAIN");
+                    }
+                    else
+                    {
+                        await ecrivain.WriteLineAsync("250 faux-smtp.immoplus.test");
+                    }
+                }
+                else if (commande.StartsWith("AUTH PLAIN"))
+                {
+                    var reponse = ligne.Length > "AUTH PLAIN ".Length ? ligne["AUTH PLAIN ".Length..].Trim() : "";
+                    if (reponse.Length == 0)
+                    {
+                        await ecrivain.WriteLineAsync("334 ");
+                        reponse = (await lecteur.ReadLineAsync() ?? "").Trim();
+                    }
+                    // « \0utilisateur\0mot de passe » en base 64 (RFC 4616).
+                    var parties = Encoding.UTF8.GetString(Convert.FromBase64String(reponse)).Split('\0');
+                    if (identifiants is { } attendu && parties.Length == 3 && parties[1] == attendu.Utilisateur && parties[2] == attendu.MotDePasse)
+                    {
+                        authentifie = true;
+                        Interlocked.Increment(ref _authentificationsReussies);
+                        await ecrivain.WriteLineAsync("235 Authentification reussie");
+                    }
+                    else
+                    {
+                        await ecrivain.WriteLineAsync("535 Identifiants refuses");
+                    }
                 }
                 else if (commande.StartsWith("MAIL FROM"))
                 {
                     destinataires.Clear();
+                    if (!authentifie)
+                    {
+                        await ecrivain.WriteLineAsync("530 Authentification requise");
+                        continue;
+                    }
                     if (Interlocked.Decrement(ref _refusAVenir) >= 0)
                     {
                         await ecrivain.WriteLineAsync("451 Service momentanement indisponible");

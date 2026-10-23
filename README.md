@@ -273,6 +273,20 @@ Les emails et SMS ne sont plus envoyés pendant la requête : `NotificationServi
 - Les rappels marquent une échéance « rappelée » quand l'email est **mis en file** (même transaction) : pas de double rappel.
 - Messages envoyés ou abandonnés conservés 90 jours (purge avec les rappels quotidiens).
 - Consultation (Admin) : `GET /admin/messages-sortants?statut=&page=&taille=` (du plus récent au plus ancien, 100 par page au plus).
+- **SMTP non configuré** (`Smtp__Host` vide) : les emails sont **quand même enregistrés** et restent `EnAttente`, sans consommer de tentative ni être abandonnés ; ils partent dès que le SMTP est configuré (après redémarrage de l'API). Les SMS ne sont pas bloqués derrière eux. Un avertissement est écrit au démarrage.
+- **Relance** (Admin, page « Messages sortants ») : `POST /admin/messages-sortants/relancer?statut=Abandonne` (ou `Echec`) remet en file tous les messages de ce statut avec 5 nouvelles tentatives et un envoi immédiat ; `POST /admin/messages-sortants/{id}/relancer` pour un seul message (409 s'il n'est ni abandonné ni en échec). Réponse `{ "relances": n }`, action tracée dans le journal (`message-sortant.relancer`).
+
+### Réglages SMTP (MailKit)
+
+| Réglage | Rôle |
+|---|---|
+| `Smtp__Host` | serveur (vide = emails conservés en attente) |
+| `Smtp__Port` | 25 par défaut ; 465 (SSL implicite), 587 (STARTTLS), 1025 (MailHog) |
+| `Smtp__Securite` | `Auto` (défaut : 465 → SSL implicite, 587 → STARTTLS, 25 / 1025 → aucun, autre port → STARTTLS si proposé), `Aucune`, `SslImplicite`, `StartTls` ; valeur inconnue refusée |
+| `Smtp__Utilisateur` / `Smtp__MotDePasse` | authentification si l'identifiant est renseigné (mot de passe jamais journalisé) |
+| `Smtp__Expediteur` / `Smtp__NomExpediteur` | adresse et nom affiché (« ImmoPlus » par défaut) |
+
+Délai de 30 s par envoi. En développement : `mailhog:1025`, sans authentification ni TLS (rien à changer). Le journal de démarrage indique l'hôte, le port, le chiffrement retenu et si une authentification est faite.
 
 ```bash
 docker compose exec -T postgres psql -U immoplus immoplus -c 'SELECT "Statut", count(*) FROM "MessagesSortants" GROUP BY 1'   # 0 EnAttente, 1 Envoye, 2 Echec, 3 Abandonne
@@ -506,44 +520,79 @@ Le dossier de tests est à côté de `api/ImmoPlus.Api` (contexte de build Docke
 
 ## Notes de sécurité (dev → prod)
 
-- La clé JWT (`Jwt:Cle` dans `appsettings.json`) est une valeur de développement. En production, elle est remplacée via la variable d'environnement `Jwt__Cle` définie dans le service systemd (jamais commitée).
-- Les origines CORS (`Cors:OriginesAutorisees`) sont définies par environnement (`appsettings.Production.json` pour la prod).
-- Les documents uploadés sont stockés localement dans `api/ImmoPlus.Api/Storage/documents/` (hors `wwwroot`, jamais servi en statique — accès uniquement via route authentifiée). Ce dossier est exclu de Git.
+- La clé JWT de `appsettings.json` est **publique** (dépôt GitHub) : valeur de développement uniquement. La production utilise sa propre clé (`Jwt__Cle`, 128 caractères aléatoires) dans `/etc/immoplus/immoplus.env` (root, 600), jamais commitée.
+- Les origines CORS (`Cors:OriginesAutorisees`) sont définies par environnement (`Cors__OriginesAutorisees__0…` en production).
+- Les fichiers déposés (photos, documents, états des lieux, pièces d'identité) ne sont jamais servis en statique : accès uniquement par les routes de l'API. En production : `/var/lib/immoplus/storage` (utilisateur `immoplus`, 700).
 
-## Déploiement (VPS Hostinger 168.231.77.68)
+## Déploiement (VPS Hostinger 168.231.77.68) — version légère
 
-L'API et le client sont déployés séparément sur le même VPS que l'ancien projet, sans toucher à `financement-api` :
+Une seule instance de l'API, PostgreSQL natif du serveur, fichiers sur disque, pas de Docker ni de Redis. Même VPS que l'ancien projet **financement** (`financement-api`, port 5000, site nginx `financement-api`, base `financement`) : ne jamais y toucher.
 
-| | Ancien projet (financement) | ImmoPlus |
-|---|---|---|
-| API | port 5000, reverse-proxy nginx → port 80 | port 5050, exposé directement |
-| Client | non déployé | fichiers statiques nginx, port 8081 |
-| Repo VPS | `/var/www/financement-location-api-git` | `/var/www/immoplus-git` |
-| Service systemd | `financement-api` | `immoplus-api` |
+| | Emplacement |
+|---|---|
+| Adresses | http://immoplus.cloud (dès que le DNS pointe vers le VPS ; HTTPS ensuite) et, en attendant, http://168.231.77.68:8081 |
+| API | service systemd `immoplus-api`, utilisateur `immoplus`, **127.0.0.1:5050** uniquement (derrière nginx) |
+| Code publié | `/opt/immoplus/current` → `/opt/immoplus/releases/<date>-<commit>` (5 versions gardées) |
+| Configuration et secrets | `/etc/immoplus/immoplus.env` (root, 600) — modèle : `infra/production/immoplus.env.exemple` |
+| Base | PostgreSQL 18 local, base et rôle `immoplus` (non superutilisateur), extensions `unaccent` et `pg_trgm` |
+| Fichiers | `/var/lib/immoplus/storage` (`Stockage__Disque__Dossier` ; défaut `Storage/` à côté du programme, d'où l'ancien lien `Storage` dans chaque version) |
+| Client React | `/var/www/immoplus-react` (build Vite, `VITE_API_URL=/api`) |
+| nginx | `/etc/nginx/sites-available/immoplus` + `/etc/nginx/snippets/immoplus-commun.conf` : `/api/` → API sans le préfixe, WebSockets `/api/hubs/`, `/api/metriques` bloqué (404), cache des photos publiques, repli SPA |
+| Sauvegardes | `immoplus-sauvegarde.timer` chaque nuit vers 3 h 30 : `/var/backups/immoplus/postgres/immoplus-*.dump` (pg_dump -Fc, visibles dans la page admin) et `/var/backups/immoplus/fichiers/storage-*.tar.gz`, 14 jours |
+| Dépôt | `/var/www/immoplus-git` (branche `main`) |
+| Ancienne installation (SQLite, Blazor) | archivée dans `/var/backups/immoplus-ancien-20261023/` |
 
-URLs actuelles (IP + port, pas encore de domaine/HTTPS — voir "Reste à faire") :
-- API : http://168.231.77.68:5050 (Swagger : /swagger)
-- Client : http://168.231.77.68:8081
+Fichiers sources : `infra/production/` (installation : `installer-serveur.sh`, ré-exécutable sans danger).
 
-**Redéployer l'API après un push sur `main` :**
+**Mettre à jour l'API** (après un push sur `main`) — sauvegarde, `git pull`, publication Release, redémarrage (migrations au démarrage), contrôle `/sante/pret`, retour automatique à la version précédente en cas d'échec :
 ```bash
-ssh root@168.231.77.68
-cd /var/www/immoplus-git && git pull
-cd api/ImmoPlus.Api && dotnet publish -c Release -o ./publish
-systemctl restart immoplus-api   # les migrations EF Core s'appliquent automatiquement au démarrage
+ssh root@168.231.77.68 immoplus-deployer
+ssh root@168.231.77.68 immoplus-deployer --retour   # revenir à la version précédente (le code seulement)
+```
+Si `infra/production/deployer.sh` (ou un autre script) change, le réinstaller : `ssh root@168.231.77.68 bash /var/www/immoplus-git/infra/production/installer-serveur.sh`.
+
+**Mettre à jour le client** (depuis le Mac, dépôt sur le même commit que l'API) :
+```bash
+infra/production/deployer-front.sh
 ```
 
-**Redéployer le client** (build en local puis transfert, car `npm`/Tailwind ne sont pas installés sur le VPS) :
+**Sauvegarde / restauration** :
 ```bash
-# En local, dans web/ImmoPlus.Web
-npx tailwindcss -i ./wwwroot/css/tailwind-input.css -o ./wwwroot/css/tailwind-output.css --minify
-dotnet publish -c Release -o ./publish
-rsync -az ./publish/wwwroot/ root@168.231.77.68:/var/www/immoplus-web/
+ssh root@168.231.77.68 systemctl start immoplus-sauvegarde       # sauvegarde immédiate
+ssh -t root@168.231.77.68 immoplus-restaurer /var/backups/immoplus/postgres/immoplus-AAAAMMJJ-HHMM.dump [/var/backups/immoplus/fichiers/storage-AAAAMMJJ-HHMM.tar.gz]
+# vérifier une sauvegarde sans toucher à la production :
+ssh -t root@168.231.77.68 BASE=essai_restauration immoplus-restaurer <fichier.dump>   # puis : sudo -u postgres dropdb essai_restauration
+# copie hors du serveur (les sauvegardes sont sur le même disque que les données) :
+rsync -az root@168.231.77.68:/var/backups/immoplus/ ~/Sauvegardes/immoplus-vps/
+```
+La restauration fait d'abord une sauvegarde de sécurité de la base actuelle (`immoplus-avant-restauration-*.dump`).
+
+**Modifier un réglage ou un secret** (mot de passe SMTP, URL du site…) : `sudo nano /etc/immoplus/immoplus.env` puis `sudo systemctl restart immoplus-api`.
+
+**Emails (Hostinger)** : dans `/etc/immoplus/immoplus.env`, `Smtp__Host=smtp.hostinger.com`, `Smtp__Port=465`, `Smtp__Securite=SslImplicite` (ou 587 + `StartTls`), `Smtp__Utilisateur=noreply@mail.immoplus.cloud`, `Smtp__MotDePasse=…`, `Smtp__Expediteur=noreply@mail.immoplus.cloud` (même adresse que l'identifiant), puis redémarrer l'API. Vérifier : `journalctl -u immoplus-api | grep SMTP` (ligne de démarrage), puis la page admin « Messages sortants » ; les messages `Abandonne` d'avant la configuration se relancent par le bouton « Relancer » (ou `POST /api/admin/messages-sortants/relancer?statut=Abandonne`).
+
+**Derrière nginx** : `RedirectionHttps__Actif=false` (nginx termine HTTPS ; évite l'avertissement « Failed to determine the https port »).
+
+**HTTPS** (dès que `immoplus.cloud` et `www` pointent vers 168.231.77.68) :
+```bash
+certbot --nginx -d immoplus.cloud -d www.immoplus.cloud --redirect -m <email> --agree-tos --no-eff-email
+# puis dans /etc/immoplus/immoplus.env : Frontend__Url=https://immoplus.cloud ; systemctl restart immoplus-api
+# et fermer l'accès en clair par l'IP : supprimer le bloc « listen 8081 » de /etc/nginx/sites-available/immoplus, nginx -t && systemctl reload nginx
+```
+
+**Premier administrateur** (base vide) : tant qu'aucun admin actif n'existe, l'inscription avec le rôle `Admin` est acceptée et validée d'office (`POST /api/utilisateur/inscription`, `"role": "Admin"`) ; ensuite seul un admin crée un admin.
+
+**Journaux et contrôles** :
+```bash
+journalctl -u immoplus-api -f                     # journaux JSON de l'API
+tail -f /var/log/nginx/immoplus.access.log        # accès (avec l'identifiant de corrélation cid=)
+curl -s http://127.0.0.1:5050/sante/pret          # sur le VPS
+# métriques (jamais publiées par nginx), sur le VPS :
+curl -H "Authorization: Bearer $(grep ^Metriques__Jeton= /etc/immoplus/immoplus.env | cut -d= -f2)" http://127.0.0.1:5050/metriques
 ```
 
 ## Reste à faire
 
-- **Nom de domaine + HTTPS** : bloqué tant qu'aucun domaine n'est choisi/acheté — dès qu'un domaine pointe vers `168.231.77.68`, ajouter un reverse-proxy nginx (port 80/443) devant l'API et le client, puis `certbot` pour le TLS.
-- Passage à PostgreSQL en production : fait en local (voir « Base de données PostgreSQL ») ; sur le VPS, PostgreSQL est installé mais pas encore branché à ImmoPlus (base, utilisateur dédié, `ConnectionStrings__Default` dans le fichier d'environnement systemd, sauvegardes `pg_dump`, migration des données réelles).
-- Étape 2 de la montée en charge (S3, Redis, boîte d'envoi, plusieurs instances) : faite en local ; sur le VPS, il faudra un stockage S3 (Garage ou fournisseur), Redis, et copier les fichiers avec `api/ImmoPlus.CopieFichiers` avant de passer en `Stockage__Mode=S3`.
-- Restyler/finaliser des parcours secondaires si besoin (ex. tableau de bord Admin dédié).
+- **DNS** : enregistrements A de `immoplus.cloud` et `www` vers 168.231.77.68, puis HTTPS (ci-dessus).
+- **Emails** : l'API sait désormais s'authentifier et chiffrer (MailKit, 465 / 587) ; reste à déployer cette version et à renseigner les réglages Hostinger (ci-dessus), puis relancer les messages abandonnés.
+- Étape 2 de la montée en charge (S3, Redis, plusieurs instances) : faite en local, non utilisée par la version légère du VPS.

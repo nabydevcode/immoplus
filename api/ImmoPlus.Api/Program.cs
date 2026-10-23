@@ -114,8 +114,9 @@ if (string.Equals(modeStockage, "S3", StringComparison.OrdinalIgnoreCase))
 }
 else if (string.Equals(modeStockage, "Disque", StringComparison.OrdinalIgnoreCase))
 {
+    // Stockage:Disque:Dossier : chemin absolu (production : /var/lib/immoplus/storage) ou relatif à la racine de l'API ; défaut Storage/.
     builder.Services.AddSingleton<IStockageFichiers>(sp =>
-        new StockageDisque(Path.Combine(sp.GetRequiredService<IWebHostEnvironment>().ContentRootPath, "Storage")));
+        new StockageDisque(StockageDisque.DossierConfigure(builder.Configuration, sp.GetRequiredService<IWebHostEnvironment>().ContentRootPath)));
 }
 else
 {
@@ -293,8 +294,23 @@ using (var scope = app.Services.CreateScope())
 }
 app.Logger.LogInformation("Stockage des fichiers : {Mode}{Detail} ; Redis : {Redis}", modeStockage,
     string.Equals(modeStockage, "S3", StringComparison.OrdinalIgnoreCase)
-        ? $" (bucket « {builder.Configuration["Stockage:S3:Bucket"]} » sur {builder.Configuration["Stockage:S3:Url"]})" : " (dossier Storage/)",
+        ? $" (bucket « {builder.Configuration["Stockage:S3:Bucket"]} » sur {builder.Configuration["Stockage:S3:Url"]})"
+        : $" (dossier {StockageDisque.DossierConfigure(builder.Configuration, app.Environment.ContentRootPath)})",
     redisActif ? "actif (SignalR, limiteur, cache du statut partagés)" : "désactivé (instance unique)");
+// Emails : hôte, port et chiffrement retenus (jamais le mot de passe) ; sans hôte, ils s'accumulent dans la boîte d'envoi.
+var hoteSmtp = builder.Configuration["Smtp:Host"];
+if (string.IsNullOrWhiteSpace(hoteSmtp))
+{
+    app.Logger.LogWarning("SMTP non configuré (Smtp:Host vide) : les emails restent en attente dans la boîte d'envoi jusqu'à sa configuration");
+}
+else
+{
+    using var scope = app.Services.CreateScope();
+    var email = scope.ServiceProvider.GetRequiredService<EmailServices>();
+    app.Logger.LogInformation("SMTP : {Hote}:{Port}, chiffrement {Chiffrement}, authentification {Authentification}", hoteSmtp, email.Port,
+        EmailServices.OptionSocket(email.Securite, email.Port),
+        string.IsNullOrWhiteSpace(builder.Configuration["Smtp:Utilisateur"]) ? "aucune" : "par identifiant");
+}
 
 // Derrière nginx, l'adresse du client arrive dans X-Forwarded-For : seuls la boucle locale et les réseaux listés dans
 // ProxysDeConfiance:Reseaux (ex. « 172.16.0.0/12 », réseau Docker du répartiteur ; vide par défaut) sont crus, pour que
@@ -336,11 +352,20 @@ app.Use(async (contexte, suivant) =>
     await suivant();
 });
 
-// Swagger exposé en permanence : sert de documentation vivante pour le futur client mobile.
-app.UseSwagger();
-app.UseSwaggerUI();
+// Swagger : documentation vivante en développement ; masqué en production (liste des routes = information utile à un attaquant),
+// sauf si Swagger:Actif=true est demandé explicitement.
+if (app.Configuration.GetValue("Swagger:Actif", app.Environment.IsDevelopment()))
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
 
-app.UseHttpsRedirection();
+// Derrière nginx (qui termine HTTPS et parle à l'API en HTTP), RedirectionHttps:Actif = false : pas de redirection
+// ni d'avertissement « Failed to determine the https port ».
+if (builder.Configuration.GetValue("RedirectionHttps:Actif", true))
+{
+    app.UseHttpsRedirection();
+}
 app.UseCors("AutoriserClients");
 app.UseAuthentication();
 // Un jeton reste valide jusqu'à son expiration : on vérifie donc à chaque requête que le compte est toujours actif
@@ -477,6 +502,21 @@ app.MapGet("/admin/sms", async (SmsServices services, int? page, int? taille) =>
 // --- Boîte d'envoi des emails et SMS (admin), du plus récent au plus ancien ; statut : EnAttente, Envoye, Echec ou Abandonne ---
 app.MapGet("/admin/messages-sortants", async (BoiteEnvoiServices services, string? statut, int? page, int? taille) =>
     Results.Ok(await services.ListerAsync(statut, page ?? 1, taille ?? 20))).RequireAuthorization(policy => policy.RequireRole("Admin"));
+
+// Relance (SMTP corrigé…) : statut = Abandonne ou Echec ; 5 nouvelles tentatives, envoi dans les secondes qui suivent.
+app.MapPost("/admin/messages-sortants/relancer", async (BoiteEnvoiServices services, JournalServices journal, string? statut) =>
+{
+    var relances = await services.RelancerAsync(statut);
+    await journal.EnregistrerAsync("message-sortant.relancer", "MessageSortant", null, $"{relances} message(s) {statut?.Trim()} relancé(s)");
+    return Results.Ok(new RelanceMessagesDto { Relances = relances });
+}).RequireAuthorization(policy => policy.RequireRole("Admin"));
+
+app.MapPost("/admin/messages-sortants/{id:int}/relancer", async (int id, BoiteEnvoiServices services, JournalServices journal) =>
+{
+    var relances = await services.RelancerAsync(null, id);
+    await journal.EnregistrerAsync("message-sortant.relancer", "MessageSortant", id, $"Message sortant n° {id} relancé");
+    return Results.Ok(new RelanceMessagesDto { Relances = relances });
+}).RequireAuthorization(policy => policy.RequireRole("Admin"));
 
 // --- Sauvegardes de la base (admin) ---
 app.MapGet("/admin/sauvegardes", (SauvegardeServices services) =>

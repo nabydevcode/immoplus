@@ -14,6 +14,10 @@
     <PackageReference Include="ClosedXML" Version="0.105.1" />
     <!-- Dépendance transitive du backplane SignalR Redis (2.5.302 signalée vulnérable, GHSA-qhrr-8q5h-9q3h) : version corrigée imposée. -->
     <PackageReference Include="MessagePack" Version="2.5.303" />
+    <!-- Emails : client SMTP authentifié et chiffré (SSL implicite 465, STARTTLS 587) ; MailKit et MimeKit sous licence MIT. -->
+    <PackageReference Include="MailKit" Version="4.18.1" />
+    <!-- Dépendance transitive de MimeKit (10.0.0 signalée vulnérable, GHSA-846f-f764-76mx) : version corrigée imposée. -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
     <!-- Cache de sortie des listes publiques partagé entre les instances (Redis), licence MIT. -->
     <PackageReference Include="Microsoft.AspNetCore.OutputCaching.StackExchangeRedis" Version="10.0.12" />

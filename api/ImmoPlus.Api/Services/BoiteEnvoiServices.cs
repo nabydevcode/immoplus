@@ -5,6 +5,7 @@ using Npgsql;
 using NpgsqlTypes;
 using ImmoPlus.Api.Data;
 using ImmoPlus.Api.Dtos;
+using ImmoPlus.Api.Exceptions;
 using ImmoPlus.Api.Models;
 using ImmoPlus.Api.Models.Enums;
 
@@ -106,6 +107,54 @@ public class BoiteEnvoiServices
         };
     }
 
+    /// <summary>
+    /// Admin : remet en file les messages Abandonne ou Echec (SMTP corrigé…), avec 5 nouvelles tentatives et un envoi immédiat ;
+    /// <paramref name="id"/> : ce message seulement. Mise à jour conditionnelle en une requête : un message en cours d'envoi
+    /// (verrouillé par le dépileur) est réévalué après son traitement, un message parti entre-temps n'est pas relancé.
+    /// </summary>
+    public async Task<int> RelancerAsync(string? statut, int? id = null)
+    {
+        StatutMessageSortant? filtre = null;
+        if (!string.IsNullOrWhiteSpace(statut))
+        {
+            if (int.TryParse(statut, out _) || !Enum.TryParse<StatutMessageSortant>(statut.Trim(), true, out var s)
+                || s is not (StatutMessageSortant.Abandonne or StatutMessageSortant.Echec))
+            {
+                throw new InvalidOperationException("Statut invalide. Seuls les messages Abandonne ou Echec peuvent être relancés");
+            }
+            filtre = s;
+        }
+        else if (id is null)
+        {
+            throw new InvalidOperationException("Précisez le statut des messages à relancer (Abandonne ou Echec)");
+        }
+
+        var requete = _context.MessagesSortants
+            .Where(m => m.Statut == StatutMessageSortant.Abandonne || m.Statut == StatutMessageSortant.Echec);
+        if (filtre is { } f)
+        {
+            requete = requete.Where(m => m.Statut == f);
+        }
+        if (id is { } identifiant)
+        {
+            if (!await _context.MessagesSortants.AnyAsync(m => m.Id == identifiant))
+            {
+                throw new NotFoundException("Message introuvable");
+            }
+            requete = requete.Where(m => m.Id == identifiant);
+        }
+        var maintenant = DateTime.UtcNow;
+        var relances = await requete.ExecuteUpdateAsync(m => m
+            .SetProperty(x => x.Statut, StatutMessageSortant.EnAttente)
+            .SetProperty(x => x.Tentatives, 0)
+            .SetProperty(x => x.ProchaineTentative, maintenant));
+        if (id is not null && relances == 0)
+        {
+            throw new ConflictException("Ce message n'est ni abandonné ni en échec : il ne peut pas être relancé");
+        }
+        return relances;
+    }
+
     /// <summary>Supprime les messages envoyés ou abandonnés depuis plus de 90 jours.</summary>
     public Task<int> PurgerAsync(CancellationToken annulation = default)
     {
@@ -154,10 +203,13 @@ public class EnvoiMessagesServices
         {
             Value = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified)
         };
+        // SMTP non configuré : les emails restent en attente (sans tentative consommée) et ne bloquent pas les SMS derrière eux.
+        var emailsActifs = _email.EstConfigure;
         var message = (await _context.MessagesSortants
             .FromSql($"""
                 SELECT * FROM "MessagesSortants"
                 WHERE "Statut" IN ({(int)StatutMessageSortant.EnAttente}, {(int)StatutMessageSortant.Echec}) AND "ProchaineTentative" <= {maintenant}
+                  AND ({emailsActifs} OR "Type" <> {(int)TypeMessageSortant.Email})
                 ORDER BY "ProchaineTentative", "Id"
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED

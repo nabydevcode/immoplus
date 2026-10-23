@@ -1,0 +1,11 @@
+# Sauvegarde quotidienne d'ImmoPlus (base + fichiers), lancée par immoplus-sauvegarde.timer.
+# Installé dans /etc/systemd/system/ ; script : /usr/local/sbin/immoplus-sauvegarde (infra/production/sauvegarde.sh).
+[Unit]
+Description=Sauvegarde ImmoPlus (pg_dump + fichiers)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/immoplus-sauvegarde
+Nice=10
+IOSchedulingClass=idle

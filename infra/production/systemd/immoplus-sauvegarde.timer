@@ -1,0 +1,11 @@
+# Tous les jours vers 3 h 30 (heure du serveur) ; rattrapée au démarrage si le serveur était éteint.
+[Unit]
+Description=Sauvegarde quotidienne ImmoPlus
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

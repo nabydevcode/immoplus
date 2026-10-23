@@ -1,0 +1,44 @@
+# API ImmoPlus (version légère, 1 instance) derrière nginx. Installé dans /etc/systemd/system/immoplus-api.service.
+# Secrets et réglages : /etc/immoplus/immoplus.env (root:root, 600 ; modèle : infra/production/immoplus.env.exemple).
+# Code publié : /opt/immoplus/current -> /opt/immoplus/releases/<date>-<commit> (voir deployer.sh).
+# Fichiers (photos, documents, pièces d'identité) : /var/lib/immoplus/storage (lien « Storage » dans chaque version).
+[Unit]
+Description=API ImmoPlus
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=immoplus
+Group=immoplus
+WorkingDirectory=/opt/immoplus/current
+ExecStart=/usr/bin/dotnet /opt/immoplus/current/ImmoPlus.Api.dll
+EnvironmentFile=/etc/immoplus/immoplus.env
+Environment=ASPNETCORE_ENVIRONMENT=Production
+# Écoute locale uniquement : seul nginx (même machine) y accède.
+Environment=ASPNETCORE_URLS=http://127.0.0.1:5050
+Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
+Environment=DOTNET_NOLOGO=1
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+SyslogIdentifier=immoplus-api
+
+# Petit serveur partagé (4 Go) : au-delà de 900 Mo le noyau freine l'API, à 1,5 Go il l'arrête (puis Restart=always).
+MemoryHigh=900M
+MemoryMax=1500M
+
+# Durcissement : système en lecture seule sauf les données de l'API.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/immoplus
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

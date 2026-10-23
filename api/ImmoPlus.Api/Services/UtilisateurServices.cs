@@ -189,10 +189,10 @@ public class UtilisateurServices
 
         var lien = $"{_liens.Url}/reinitialiser-mot-de-passe?jeton={jeton}";
 
-        if (_emailServices.EstConfigure)
+        // Jeton et email (boîte d'envoi) enregistrés ensemble ; l'envoi part en arrière-plan avec nouvelles tentatives
+        // (SMTP non configuré : l'email attend dans la boîte d'envoi jusqu'à sa configuration).
+        await using (var transaction = await _context.Database.BeginTransactionAsync())
         {
-            // Jeton et email (boîte d'envoi) enregistrés ensemble ; l'envoi part en arrière-plan avec nouvelles tentatives.
-            await using var transaction = await _context.Database.BeginTransactionAsync();
             await _context.SaveChangesAsync();
             await _boite.AjouterEmailAsync(utilisateur.Email, utilisateur.Id, "Réinitialisation de votre mot de passe ImmoPlus",
                 $"""
@@ -202,16 +202,18 @@ public class UtilisateurServices
                 <p>Ce lien est valable 1 heure. Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.</p>
                 """, "ReinitialisationMotDePasse", null);
             await transaction.CommitAsync();
+        }
+        if (_emailServices.EstConfigure)
+        {
             return;
         }
-        await _context.SaveChangesAsync();
         if (_environment.IsDevelopment())
         {
             _logger.LogWarning("SMTP non configuré, lien de réinitialisation pour {Email} : {Lien}", utilisateur.Email, lien);
         }
         else
         {
-            _logger.LogWarning("Réinitialisation demandée pour {Email}, mais aucun envoi d'email n'est configuré", utilisateur.Email);
+            _logger.LogWarning("Réinitialisation demandée pour {Email} : email en attente, SMTP non configuré", utilisateur.Email);
         }
     }
 

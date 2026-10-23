@@ -49,7 +49,7 @@ public static class ClesStockage
     }
 }
 
-/// <summary>Mode Disque (défaut, une seule instance) : fichiers sous {ContentRoot}/Storage, comme avant l'étape 2.</summary>
+/// <summary>Mode Disque (défaut, une seule instance) : fichiers sous Stockage:Disque:Dossier ({ContentRoot}/Storage par défaut).</summary>
 public class StockageDisque : IStockageFichiers
 {
     private readonly string _racine;
@@ -60,6 +60,15 @@ public class StockageDisque : IStockageFichiers
     }
 
     public string Racine => _racine;
+
+    /// <summary>Stockage:Disque:Dossier (absolu, ou relatif à la racine de l'API) ; défaut : {racine de l'API}/Storage.</summary>
+    public static string DossierConfigure(IConfiguration configuration, string racineContenu)
+    {
+        var dossier = configuration["Stockage:Disque:Dossier"];
+        return Path.GetFullPath(string.IsNullOrWhiteSpace(dossier)
+            ? Path.Combine(racineContenu, "Storage")
+            : Path.Combine(racineContenu, dossier.Trim()));
+    }
 
     private string Chemin(string cle)
     {
