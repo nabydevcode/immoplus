@@ -292,6 +292,27 @@ Délai de 30 s par envoi. En développement : `mailhog:1025`, sans authentificat
 docker compose exec -T postgres psql -U immoplus immoplus -c 'SELECT "Statut", count(*) FROM "MessagesSortants" GROUP BY 1'   # 0 EnAttente, 1 Envoye, 2 Echec, 3 Abandonne
 ```
 
+### Copie dans « Envoyés » (IMAP)
+
+Avec `Imap__Actif=true`, chaque email **parti** (SMTP accepté, pas les SMS) est aussi déposé par **IMAP APPEND** dans le dossier des messages envoyés de la boîte de l'expéditeur, avec le drapeau « lu » (`\Seen`), la même date et le même `Message-Id` que l'email reçu : l'équipe retrouve dans son webmail tout ce que le site a envoyé (pas de copie cachée, rien de visible pour le destinataire).
+
+| Réglage | Rôle |
+|---|---|
+| `Imap__Actif` | `false` par défaut (développement, tests : aucune connexion IMAP) |
+| `Imap__Host` / `Imap__Port` | serveur IMAP ; port 993 par défaut |
+| `Imap__Securite` | comme `Smtp__Securite` : `Auto` (993 → SSL implicite, 143 → STARTTLS, autre → STARTTLS si proposé), `Aucune`, `SslImplicite`, `StartTls` |
+| `Imap__Utilisateur` / `Imap__MotDePasse` | vides = ceux du SMTP (même boîte) |
+| `Imap__Dossier` | vide = détection : dossier spécial `\Sent` annoncé par le serveur (SPECIAL-USE), sinon `Sent`, `INBOX.Sent`, `Sent Messages`, `Envoyés` ; sinon nom exact du dossier |
+
+- **Un échec de la copie ne touche jamais l'email** (déjà parti, statut `Envoye`, jamais renvoyé) : avertissement dans le journal (sans mot de passe ni contenu), trace dans `MessagesSortants` (`CopieEnvoyes` : vide / `Ok` / `Echec` / `Abandonnee`, `CopieTentatives`, `CopieErreur`) et **nouvel essai de la copie seule** après 1 min, 5 min puis 30 min ; abandon au 4e échec. Aucun dossier trouvé : erreur « renseignez Imap:Dossier ».
+- Une connexion IMAP par instance, **réutilisée** d'un email à l'autre (rouverte si le serveur l'a coupée, après 5 min d'inactivité ou si les réglages changent) ; délai de 30 s. La copie se fait juste après l'envoi SMTP, sous le même verrou du message (pas de double copie entre instances).
+- Page admin « Messages sortants » : champs `copieEnvoyes`, `copieTentatives`, `copieErreur` ; métrique `immoplus_boite_envoi_copie_echecs` (emails dont la copie est en échec ou abandonnée).
+- Le journal de démarrage indique l'hôte, le port, le chiffrement, le compte et le dossier de la copie IMAP quand elle est active.
+
+```bash
+docker compose exec -T postgres psql -U immoplus immoplus -c 'SELECT "CopieEnvoyes", count(*) FROM "MessagesSortants" WHERE "Type" = 0 GROUP BY 1'   # vide, 0 Ok, 1 Echec, 2 Abandonnee
+```
+
 ## Pagination, performances et observabilité (étape 3)
 
 ### Listes paginées
@@ -325,7 +346,7 @@ Migration `IndexEtPerformances` : index composites des listes (participant + dat
 - DataProtection n'est utilisé par rien (JWT, pas de cookie) : clés éphémères en mémoire, plus d'avertissement « keys … may not be persisted » au démarrage.
 - `GET /sante/vivant` : le processus répond (200). `GET /sante/pret` : PostgreSQL, Redis s'il est configuré, S3 en mode S3 (200 `{"statut":"Ok",…}` ou 503 `"Indisponible"`), JSON sans secret ; pour nginx, les healthchecks compose ou systemd.
 - Journaux JSON sur la console (une ligne par événement, `Journaux__Format=Texte` pour un affichage lisible), avec l'identifiant de corrélation : en-tête `X-Correlation-Id` repris (s'il est sûr) ou généré, renvoyé dans la réponse, présent dans toutes les lignes de la requête ; une ligne par requête (méthode, modèle de route, statut, durée, n° d'utilisateur ; jamais de chaîne de requête, de jeton, de mot de passe ni de contenu de message). Les requêtes SQL ne sont plus journalisées une à une (`Microsoft.EntityFrameworkCore.Database.Command` = Warning).
-- `GET /metriques` (format Prometheus, OpenTelemetry) : durées des requêtes par route (`http_server_request_duration_seconds`, histogramme → p50/p95/p99 avec `histogram_quantile`), statuts et erreurs, connexions SignalR (`signalr_server_active_connections`, dès la première connexion), requêtes SQL Npgsql (`db_client_operation_duration_seconds`, connexions du pool), processus (CPU, mémoire, GC, threads), boîte d'envoi (`immoplus_boite_envoi_en_attente`, `immoplus_boite_envoi_abandonnes`). Accès : avec `Metriques__Jeton` renseigné, en-tête `Authorization: Bearer <jeton>` obligatoire ; sinon uniquement depuis la boucle locale et les réseaux privés (Docker, LAN) ; 404 pour les autres. nginx ne doit pas publier `/metriques`.
+- `GET /metriques` (format Prometheus, OpenTelemetry) : durées des requêtes par route (`http_server_request_duration_seconds`, histogramme → p50/p95/p99 avec `histogram_quantile`), statuts et erreurs, connexions SignalR (`signalr_server_active_connections`, dès la première connexion), requêtes SQL Npgsql (`db_client_operation_duration_seconds`, connexions du pool), processus (CPU, mémoire, GC, threads), boîte d'envoi (`immoplus_boite_envoi_en_attente`, `immoplus_boite_envoi_abandonnes`, `immoplus_boite_envoi_copie_echecs`). Accès : avec `Metriques__Jeton` renseigné, en-tête `Authorization: Bearer <jeton>` obligatoire ; sinon uniquement depuis la boucle locale et les réseaux privés (Docker, LAN) ; 404 pour les autres. nginx ne doit pas publier `/metriques`.
 
 ```bash
 curl -s http://localhost:5107/sante/pret
@@ -569,7 +590,7 @@ La restauration fait d'abord une sauvegarde de sécurité de la base actuelle (`
 
 **Modifier un réglage ou un secret** (mot de passe SMTP, URL du site…) : `sudo nano /etc/immoplus/immoplus.env` puis `sudo systemctl restart immoplus-api`.
 
-**Emails (Hostinger)** : dans `/etc/immoplus/immoplus.env`, `Smtp__Host=smtp.hostinger.com`, `Smtp__Port=465`, `Smtp__Securite=SslImplicite` (ou 587 + `StartTls`), `Smtp__Utilisateur=noreply@mail.immoplus.cloud`, `Smtp__MotDePasse=…`, `Smtp__Expediteur=noreply@mail.immoplus.cloud` (même adresse que l'identifiant), puis redémarrer l'API. Vérifier : `journalctl -u immoplus-api | grep SMTP` (ligne de démarrage), puis la page admin « Messages sortants » ; les messages `Abandonne` d'avant la configuration se relancent par le bouton « Relancer » (ou `POST /api/admin/messages-sortants/relancer?statut=Abandonne`).
+**Emails (Hostinger)** : dans `/etc/immoplus/immoplus.env`, `Smtp__Host=smtp.hostinger.com`, `Smtp__Port=465`, `Smtp__Securite=SslImplicite` (ou 587 + `StartTls`), `Smtp__Utilisateur=noreply@mail.immoplus.cloud`, `Smtp__MotDePasse=…`, `Smtp__Expediteur=noreply@mail.immoplus.cloud` (même adresse que l'identifiant), puis redémarrer l'API. Copie de chaque email dans « Envoyés » de cette boîte : `Imap__Actif=true`, `Imap__Host=imap.hostinger.com`, `Imap__Port=993`, `Imap__Securite=SslImplicite` (identifiant et mot de passe repris du SMTP, dossier détecté ; voir « Copie dans « Envoyés » (IMAP) »). Vérifier : `journalctl -u immoplus-api | grep -E 'SMTP|IMAP'` (lignes de démarrage), puis la page admin « Messages sortants » ; les messages `Abandonne` d'avant la configuration se relancent par le bouton « Relancer » (ou `POST /api/admin/messages-sortants/relancer?statut=Abandonne`).
 
 **Derrière nginx** : `RedirectionHttps__Actif=false` (nginx termine HTTPS ; évite l'avertissement « Failed to determine the https port »).
 

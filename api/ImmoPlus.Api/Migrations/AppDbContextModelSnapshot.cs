@@ -746,6 +746,19 @@ namespace ImmoPlus.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<int?>("CopieEnvoyes")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("CopieErreur")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTime?>("CopieProchaineTentative")
+                        .HasColumnType("timestamp without time zone");
+
+                    b.Property<int>("CopieTentatives")
+                        .HasColumnType("integer");
+
                     b.Property<DateTime>("DateCreation")
                         .HasColumnType("timestamp without time zone");
 
@@ -793,6 +806,9 @@ namespace ImmoPlus.Api.Migrations
                         .HasColumnType("integer");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CopieProchaineTentative")
+                        .HasFilter("\"CopieEnvoyes\" IN (1, 2)");
 
                     b.HasIndex("DateCreation");
 

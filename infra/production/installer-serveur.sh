@@ -86,6 +86,7 @@ etape "nginx : site immoplus (domaine sur 80, IP sur 8081)"
 # Dossier parent du cache des photos (absent sur une installation nginx Ubuntu neuve).
 install -d -m 755 -o root -g root /var/cache/nginx
 install -m 644 "$ICI/nginx/immoplus-commun.conf" /etc/nginx/snippets/immoplus-commun.conf
+install -m 644 "$ICI/nginx/immoplus-securite.conf" /etc/nginx/snippets/immoplus-securite.conf
 if [ ! -f /etc/nginx/sites-available/immoplus ]; then
   # Pas d'écrasement : certbot modifie ce fichier pour y ajouter HTTPS.
   install -m 644 "$ICI/nginx/immoplus.conf" /etc/nginx/sites-available/immoplus

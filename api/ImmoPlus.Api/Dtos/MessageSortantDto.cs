@@ -25,6 +25,13 @@ public class MessageSortantDto
     public DateTime DateCreation { get; set; }
     public DateTime? DateDerniereTentative { get; set; }
     public DateTime? DateEnvoi { get; set; }
+    /// <summary>
+    /// Copie dans le dossier « Envoyés » de la boîte de l'expéditeur (Imap:Actif) : null (copie désactivée, SMS ou email pas
+    /// encore parti), « Ok », « Echec » (nouvel essai prévu ; l'email, lui, est parti) ou « Abandonnee ».
+    /// </summary>
+    public string? CopieEnvoyes { get; set; }
+    public int CopieTentatives { get; set; }
+    public string? CopieErreur { get; set; }
 }
 
 /// <summary>Résultat de POST /admin/messages-sortants/relancer (et /{id}/relancer) : nombre de messages remis en file.</summary>

@@ -121,7 +121,7 @@ public class RequetesLentesInterceptor(IConfiguration configuration, ILogger<Req
 
 /// <summary>
 /// Métriques propres à ImmoPlus (compteur « ImmoPlus.Api ») : taille de la boîte d'envoi (messages en attente ou à
-/// réessayer). Lue en base au plus toutes les 15 s, quel que soit le rythme de lecture de /metriques.
+/// réessayer), emails dont la copie « Envoyés » a échoué. Lue en base au plus toutes les 15 s, quel que soit le rythme de lecture de /metriques.
 /// Les autres métriques viennent des compteurs intégrés : requêtes HTTP (Microsoft.AspNetCore.Hosting), connexions
 /// SignalR (Microsoft.AspNetCore.Http.Connections), requêtes SQL (Npgsql), processus et GC (System.Runtime).
 /// </summary>
@@ -134,7 +134,7 @@ public sealed class MetriquesImmoPlus : IDisposable
     private readonly IServiceScopeFactory _scopes;
     private readonly ILogger<MetriquesImmoPlus> _journal;
     private readonly Lock _verrou = new();
-    private (long EnAttente, long Abandonnes, DateTime LuLe) _boiteEnvoi = (0, 0, DateTime.MinValue);
+    private (long EnAttente, long Abandonnes, long CopiesEnEchec, DateTime LuLe) _boiteEnvoi = (0, 0, 0, DateTime.MinValue);
 
     public MetriquesImmoPlus(IServiceScopeFactory scopes, ILogger<MetriquesImmoPlus> journal)
     {
@@ -144,15 +144,17 @@ public sealed class MetriquesImmoPlus : IDisposable
             "Emails et SMS de la boîte d'envoi pas encore partis (en attente ou à réessayer)");
         _compteur.CreateObservableGauge("immoplus.boite_envoi.abandonnes", () => LireBoiteEnvoi().Abandonnes, "{message}",
             "Emails et SMS abandonnés après 5 tentatives");
+        _compteur.CreateObservableGauge("immoplus.boite_envoi.copie_echecs", () => LireBoiteEnvoi().CopiesEnEchec, "{message}",
+            "Emails partis dont la copie IMAP dans « Envoyés » a échoué (à réessayer ou abandonnée)");
     }
 
-    private (long EnAttente, long Abandonnes) LireBoiteEnvoi()
+    private (long EnAttente, long Abandonnes, long CopiesEnEchec) LireBoiteEnvoi()
     {
         lock (_verrou)
         {
             if (DateTime.UtcNow - _boiteEnvoi.LuLe < DureeCache)
             {
-                return (_boiteEnvoi.EnAttente, _boiteEnvoi.Abandonnes);
+                return (_boiteEnvoi.EnAttente, _boiteEnvoi.Abandonnes, _boiteEnvoi.CopiesEnEchec);
             }
             try
             {
@@ -163,8 +165,10 @@ public sealed class MetriquesImmoPlus : IDisposable
                     .GroupBy(m => m.Statut)
                     .Select(g => new { Statut = g.Key, Nombre = g.LongCount() })
                     .ToList();
+                var copiesEnEchec = contexte.MessagesSortants.AsNoTracking()
+                    .LongCount(m => m.CopieEnvoyes == StatutCopieEnvoyes.Echec || m.CopieEnvoyes == StatutCopieEnvoyes.Abandonnee);
                 _boiteEnvoi = (parStatut.Where(s => s.Statut != StatutMessageSortant.Abandonne).Sum(s => s.Nombre),
-                    parStatut.Where(s => s.Statut == StatutMessageSortant.Abandonne).Sum(s => s.Nombre), DateTime.UtcNow);
+                    parStatut.Where(s => s.Statut == StatutMessageSortant.Abandonne).Sum(s => s.Nombre), copiesEnEchec, DateTime.UtcNow);
             }
             catch (Exception ex)
             {
@@ -172,7 +176,7 @@ public sealed class MetriquesImmoPlus : IDisposable
                 _journal.LogWarning(ex, "Lecture de la boîte d'envoi impossible pour les métriques");
                 _boiteEnvoi = _boiteEnvoi with { LuLe = DateTime.UtcNow };
             }
-            return (_boiteEnvoi.EnAttente, _boiteEnvoi.Abandonnes);
+            return (_boiteEnvoi.EnAttente, _boiteEnvoi.Abandonnes, _boiteEnvoi.CopiesEnEchec);
         }
     }
 

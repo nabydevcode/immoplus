@@ -94,7 +94,10 @@ public class BoiteEnvoiServices
                 DerniereErreur = m.DerniereErreur,
                 DateCreation = m.DateCreation,
                 DateDerniereTentative = m.DateDerniereTentative,
-                DateEnvoi = m.DateEnvoi
+                DateEnvoi = m.DateEnvoi,
+                CopieEnvoyes = m.CopieEnvoyes.HasValue ? m.CopieEnvoyes.Value.ToString() : null,
+                CopieTentatives = m.CopieTentatives,
+                CopieErreur = m.CopieErreur
             })
             .ToListAsync();
         return new PagedResultDto<MessageSortantDto>
@@ -173,23 +176,31 @@ public class BoiteEnvoiServices
 /// Échec : nouvel essai après 1 min, 5 min, 30 min puis 2 h ; abandon au 5e échec.
 /// Un message n'est marqué envoyé qu'après la réponse du serveur : si l'instance s'arrête entre les deux, il repartira
 /// (au plus un doublon dans ce cas extrême, jamais de perte).
+/// Imap:Actif : chaque email parti est aussi copié dans le dossier « Envoyés » de l'expéditeur, sous le même verrou ; un échec
+/// de cette copie n'affecte jamais l'email (déjà parti) : il est tracé (CopieEnvoyes) et la copie seule est réessayée
+/// après 1 min, 5 min puis 30 min, abandonnée au 4e échec.
 /// </summary>
 public class EnvoiMessagesServices
 {
     public const int MaxTentatives = 5;
     public static readonly TimeSpan[] Delais =
         [TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(30), TimeSpan.FromHours(2)];
+    public const int MaxTentativesCopie = 4;
+    public static readonly TimeSpan[] DelaisCopie = [TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(30)];
 
     private readonly AppDbContext _context;
     private readonly EmailServices _email;
     private readonly SmsServices _sms;
+    private readonly CopieEnvoyesServices _copie;
     private readonly ILogger<EnvoiMessagesServices> _logger;
 
-    public EnvoiMessagesServices(AppDbContext context, EmailServices email, SmsServices sms, ILogger<EnvoiMessagesServices> logger)
+    public EnvoiMessagesServices(AppDbContext context, EmailServices email, SmsServices sms, CopieEnvoyesServices copie,
+        ILogger<EnvoiMessagesServices> logger)
     {
         _context = context;
         _email = email;
         _sms = sms;
+        _copie = copie;
         _logger = logger;
     }
 
@@ -227,8 +238,14 @@ public class EnvoiMessagesServices
         {
             if (message.Type == TypeMessageSortant.Email)
             {
-                await _email.EnvoyerAsync(message.Destinataire, message.Sujet ?? "", message.Contenu);
-                MarquerEnvoye(message);
+                var dateEnvoi = DateTime.UtcNow;
+                var mime = ConstruireEmail(message, dateEnvoi);
+                await _email.EnvoyerAsync(mime);
+                MarquerEnvoye(message, dateEnvoi);
+                if (_copie.EstActive)
+                {
+                    await CopierDansEnvoyesAsync(message, mime, annulation);
+                }
             }
             else
             {
@@ -245,7 +262,7 @@ public class EnvoiMessagesServices
         return true;
     }
 
-    /// <summary>Vide la file (messages dus) ; renvoie le nombre de messages traités.</summary>
+    /// <summary>Vide la file (messages dus) puis réessaie les copies « Envoyés » dues ; renvoie le nombre de messages traités.</summary>
     public async Task<int> TraiterToutAsync(CancellationToken annulation = default)
     {
         var traites = 0;
@@ -254,7 +271,97 @@ public class EnvoiMessagesServices
             traites++;
             _context.ChangeTracker.Clear();
         }
+        while (!annulation.IsCancellationRequested && await TraiterCopieSuivanteAsync(annulation))
+        {
+            _context.ChangeTracker.Clear();
+        }
         return traites;
+    }
+
+    /// <summary>Nouvel essai de la prochaine copie « Envoyés » due (email déjà parti, copie en échec) ; false s'il n'y en a pas.</summary>
+    public async Task<bool> TraiterCopieSuivanteAsync(CancellationToken annulation = default)
+    {
+        if (!_copie.EstActive)
+        {
+            return false;
+        }
+        await using var transaction = await _context.Database.BeginTransactionAsync(annulation);
+        var maintenant = new NpgsqlParameter("maintenant", NpgsqlDbType.Timestamp)
+        {
+            Value = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified)
+        };
+        var message = (await _context.MessagesSortants
+            .FromSql($"""
+                SELECT * FROM "MessagesSortants"
+                WHERE "CopieEnvoyes" = {(int)StatutCopieEnvoyes.Echec} AND "CopieProchaineTentative" <= {maintenant}
+                ORDER BY "CopieProchaineTentative", "Id"
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+                """)
+            .ToListAsync(annulation))
+            .FirstOrDefault();
+        if (message is null)
+        {
+            return false;
+        }
+        MimeKit.MimeMessage? mime = null;
+        try
+        {
+            // Même date et même Message-Id que l'email envoyé : la copie est identique à l'original.
+            mime = ConstruireEmail(message, message.DateEnvoi ?? message.DateDerniereTentative ?? DateTime.UtcNow);
+        }
+        catch (Exception ex)
+        {
+            NoterEchecCopie(message, ex);
+        }
+        if (mime is not null)
+        {
+            await CopierDansEnvoyesAsync(message, mime, annulation);
+        }
+        await _context.SaveChangesAsync(CancellationToken.None);
+        await transaction.CommitAsync(CancellationToken.None);
+        return true;
+    }
+
+    /// <summary>Message-Id stable (n° du message et date de création) : une copie réessayée garde l'identifiant de l'original.</summary>
+    private MimeKit.MimeMessage ConstruireEmail(MessageSortant message, DateTime dateEnvoi) =>
+        _email.Construire(message.Destinataire, message.Sujet ?? "", message.Contenu, dateEnvoi,
+            $"immoplus.{message.Id}.{message.DateCreation:yyyyMMddHHmmssfff}");
+
+    /// <summary>Copie IMAP de l'email parti : ne lève jamais d'exception (l'email reste marqué envoyé), l'échec est tracé.</summary>
+    private async Task CopierDansEnvoyesAsync(MessageSortant message, MimeKit.MimeMessage mime, CancellationToken annulation)
+    {
+        message.CopieTentatives++;
+        try
+        {
+            await _copie.DeposerAsync(mime, annulation);
+            message.CopieEnvoyes = StatutCopieEnvoyes.Ok;
+            message.CopieErreur = null;
+            message.CopieProchaineTentative = null;
+        }
+        catch (Exception ex)
+        {
+            NoterEchecCopie(message, ex);
+        }
+    }
+
+    private void NoterEchecCopie(MessageSortant message, Exception ex)
+    {
+        var erreur = $"{ex.GetType().Name} : {ex.Message}";
+        message.CopieErreur = erreur.Length > 1000 ? erreur[..1000] : erreur;
+        if (message.CopieTentatives >= MaxTentativesCopie)
+        {
+            message.CopieEnvoyes = StatutCopieEnvoyes.Abandonnee;
+            message.CopieProchaineTentative = null;
+            _logger.LogWarning("Copie « Envoyés » de l'email n° {Id} « {Evenement} » abandonnée après {Tentatives} essais : {Erreur}",
+                message.Id, message.Evenement, message.CopieTentatives, message.CopieErreur);
+            return;
+        }
+        message.CopieEnvoyes = StatutCopieEnvoyes.Echec;
+        message.CopieProchaineTentative = DateTime.UtcNow + DelaisCopie[Math.Min(message.CopieTentatives, DelaisCopie.Length) - 1];
+        // Avertissement sans pile ni contenu : l'email est parti, seule sa copie IMAP manque.
+        _logger.LogWarning("Copie « Envoyés » de l'email n° {Id} « {Evenement} » en échec (essai {Tentatives}), nouvel essai à {Prochaine:HH:mm} UTC : {Erreur}",
+            message.Id, message.Evenement, message.CopieTentatives, message.CopieProchaineTentative, message.CopieErreur);
     }
 
     private async Task TransmettreSmsAsync(MessageSortant message)
@@ -280,10 +387,10 @@ public class EnvoiMessagesServices
         _context.NotificationsSms.Add(trace);
     }
 
-    private static void MarquerEnvoye(MessageSortant message)
+    private static void MarquerEnvoye(MessageSortant message, DateTime? dateEnvoi = null)
     {
         message.Statut = StatutMessageSortant.Envoye;
-        message.DateEnvoi = DateTime.UtcNow;
+        message.DateEnvoi = dateEnvoi ?? DateTime.UtcNow;
         message.DerniereErreur = null;
     }
 

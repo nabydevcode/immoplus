@@ -31,6 +31,12 @@ public class MessageSortant
     public string? DerniereErreur { get; set; }
     public DateTime DateCreation { get; set; } = DateTime.UtcNow;
     public DateTime? DateDerniereTentative { get; set; }
-    /// <summary>Date de l'envoi réussi.</summary>
+    /// <summary>Date de l'envoi réussi (aussi en-tête Date de l'email, pour une copie « Envoyés » identique).</summary>
     public DateTime? DateEnvoi { get; set; }
+    /// <summary>Copie dans le dossier « Envoyés » (emails, Imap:Actif) ; null : copie désactivée, SMS ou email pas encore parti.</summary>
+    public StatutCopieEnvoyes? CopieEnvoyes { get; set; }
+    public int CopieTentatives { get; set; }
+    /// <summary>Prochain essai de la copie seule (CopieEnvoyes = Echec).</summary>
+    public DateTime? CopieProchaineTentative { get; set; }
+    public string? CopieErreur { get; set; }
 }

@@ -399,6 +399,10 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<MessageSortant>().Property(m => m.DerniereErreur).HasMaxLength(1000);
         modelBuilder.Entity<MessageSortant>().HasIndex(m => new { m.Statut, m.ProchaineTentative });
         modelBuilder.Entity<MessageSortant>().HasIndex(m => m.DateCreation);
+        modelBuilder.Entity<MessageSortant>().Property(m => m.CopieErreur).HasMaxLength(1000);
+        // Copies « Envoyés » à réessayer ou abandonnées : index partiel minuscule (seules les copies en échec y figurent).
+        modelBuilder.Entity<MessageSortant>().HasIndex(m => m.CopieProchaineTentative)
+            .HasFilter("\"CopieEnvoyes\" IN (1, 2)"); // StatutCopieEnvoyes.Echec ou Abandonnee (relance, métrique)
 
         modelBuilder.Entity<ExecutionPlanifiee>().HasKey(e => e.Nom);
         modelBuilder.Entity<ExecutionPlanifiee>().Property(e => e.Nom).HasMaxLength(50);

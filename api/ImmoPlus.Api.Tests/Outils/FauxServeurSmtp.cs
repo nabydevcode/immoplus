@@ -7,7 +7,7 @@ using System.Text;
 using MimeKit;
 
 /// <summary>Email capturé par le faux serveur SMTP (rien ne sort de la machine, MailHog n'est jamais contacté).</summary>
-public sealed record EmailCapture(string Destinataire, string Sujet, string CorpsHtml);
+public sealed record EmailCapture(string Destinataire, string Sujet, string CorpsHtml, string? MessageId = null, DateTimeOffset? Date = null);
 
 /// <summary>
 /// Serveur SMTP minimal en mémoire, sur un port libre de la boucle locale : l'API y envoie ses emails comme à un vrai serveur,
@@ -166,7 +166,7 @@ public sealed class FauxServeurSmtp : IAsyncDisposable
         var corps = message.HtmlBody ?? message.TextBody ?? "";
         foreach (var destinataire in destinataires)
         {
-            _emails.Enqueue(new EmailCapture(destinataire, message.Subject ?? "", corps));
+            _emails.Enqueue(new EmailCapture(destinataire, message.Subject ?? "", corps, message.MessageId, message.Date));
         }
     }
 

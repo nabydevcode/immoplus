@@ -60,6 +60,8 @@ builder.Services.AddScoped<UtilisateurServices>();
 builder.Services.AddScoped<AppartementServices>();
 builder.Services.AddScoped<TokenServices>();
 builder.Services.AddScoped<EmailServices>();
+// Copie IMAP des emails envoyés (Imap:Actif) : singleton, une connexion réutilisée par instance.
+builder.Services.AddSingleton<CopieEnvoyesServices>();
 builder.Services.AddScoped<NotificationServices>();
 builder.Services.AddScoped<LocationServices>();
 builder.Services.AddScoped<FinancementServices>();
@@ -310,6 +312,15 @@ else
     app.Logger.LogInformation("SMTP : {Hote}:{Port}, chiffrement {Chiffrement}, authentification {Authentification}", hoteSmtp, email.Port,
         EmailServices.OptionSocket(email.Securite, email.Port),
         string.IsNullOrWhiteSpace(builder.Configuration["Smtp:Utilisateur"]) ? "aucune" : "par identifiant");
+}
+{
+    var copie = app.Services.GetRequiredService<CopieEnvoyesServices>();
+    if (copie.EstActive)
+    {
+        app.Logger.LogInformation("Copie IMAP des emails envoyés : {Hote}:{Port}, chiffrement {Chiffrement}, compte {Compte}, dossier {Dossier}",
+            builder.Configuration["Imap:Host"], copie.Port, CopieEnvoyesServices.OptionSocket(copie.Securite, copie.Port),
+            copie.Utilisateur ?? "(aucun)", builder.Configuration["Imap:Dossier"] is { Length: > 0 } dossier ? dossier : "détection automatique");
+    }
 }
 
 // Derrière nginx, l'adresse du client arrive dans X-Forwarded-For : seuls la boucle locale et les réseaux listés dans

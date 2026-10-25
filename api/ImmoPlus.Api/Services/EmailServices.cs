@@ -36,21 +36,21 @@ public class EmailServices
     public bool EstConfigure => !string.IsNullOrWhiteSpace(_configuration["Smtp:Host"]);
 
     /// <summary>Smtp:Securite lu (Auto si vide) ; valeur inconnue refusée pour ne jamais envoyer en clair par erreur de frappe.</summary>
-    public SecuriteSmtp Securite
+    public SecuriteSmtp Securite => LireSecurite(_configuration, "Smtp:Securite");
+
+    /// <summary>Réglage de chiffrement (Smtp:Securite, Imap:Securite) : Auto si vide, valeur inconnue refusée.</summary>
+    public static SecuriteSmtp LireSecurite(IConfiguration configuration, string cle)
     {
-        get
+        var valeur = configuration[cle];
+        if (string.IsNullOrWhiteSpace(valeur))
         {
-            var valeur = _configuration["Smtp:Securite"];
-            if (string.IsNullOrWhiteSpace(valeur))
-            {
-                return SecuriteSmtp.Auto;
-            }
-            if (int.TryParse(valeur, out _) || !Enum.TryParse<SecuriteSmtp>(valeur.Trim(), true, out var securite))
-            {
-                throw new InvalidOperationException($"Smtp:Securite « {valeur} » inconnu : utilisez Auto, Aucune, SslImplicite ou StartTls");
-            }
-            return securite;
+            return SecuriteSmtp.Auto;
         }
+        if (int.TryParse(valeur, out _) || !Enum.TryParse<SecuriteSmtp>(valeur.Trim(), true, out var securite))
+        {
+            throw new InvalidOperationException($"{cle} « {valeur} » inconnu : utilisez Auto, Aucune, SslImplicite ou StartTls");
+        }
+        return securite;
     }
 
     public int Port => _configuration.GetValue("Smtp:Port", 25);
@@ -70,13 +70,16 @@ public class EmailServices
         }
     };
 
-    public async Task EnvoyerAsync(string destinataire, string sujet, string corpsHtml)
+    public Task EnvoyerAsync(string destinataire, string sujet, string corpsHtml) =>
+        EnvoyerAsync(Construire(destinataire, sujet, corpsHtml, DateTime.UtcNow, null));
+
+    /// <summary>
+    /// Message MIME de l'email : construit à l'identique pour l'envoi et pour une copie « Envoyés » déposée plus tard
+    /// (même date, même Message-Id, corps HTML seul donc sans frontière aléatoire).
+    /// </summary>
+    /// <param name="messageId">Partie gauche du Message-Id (ex. n° de la boîte d'envoi) ; null : Message-Id aléatoire.</param>
+    public MimeMessage Construire(string destinataire, string sujet, string corpsHtml, DateTime dateUtc, string? messageId)
     {
-        var hote = _configuration["Smtp:Host"];
-        if (string.IsNullOrWhiteSpace(hote))
-        {
-            throw new InvalidOperationException("SMTP non configuré (Smtp:Host vide)");
-        }
         // Adresse sans « @ » (MimeKit l'accepterait comme boîte locale) : échec explicite plutôt qu'un envoi vers nulle part.
         if (!MailboxAddress.TryParse(destinataire, out var adresse) || !adresse.Address.Contains('@'))
         {
@@ -85,11 +88,28 @@ public class EmailServices
 
         var message = new MimeMessage();
         var nomExpediteur = _configuration["Smtp:NomExpediteur"];
-        message.From.Add(new MailboxAddress(string.IsNullOrWhiteSpace(nomExpediteur) ? "ImmoPlus" : nomExpediteur,
-            _configuration["Smtp:Expediteur"] is { Length: > 0 } expediteur ? expediteur : "no-reply@immoplus.local"));
+        var expediteur = new MailboxAddress(string.IsNullOrWhiteSpace(nomExpediteur) ? "ImmoPlus" : nomExpediteur,
+            _configuration["Smtp:Expediteur"] is { Length: > 0 } adresseExpediteur ? adresseExpediteur.Trim() : "no-reply@immoplus.local");
+        message.From.Add(expediteur);
         message.To.Add(adresse);
         message.Subject = sujet;
+        message.Date = new DateTimeOffset(DateTime.SpecifyKind(dateUtc, DateTimeKind.Utc));
+        if (messageId is not null)
+        {
+            var domaine = expediteur.Address[(expediteur.Address.LastIndexOf('@') + 1)..];
+            message.MessageId = $"{messageId}@{(domaine.Length > 0 ? domaine : "immoplus.local")}";
+        }
         message.Body = new BodyBuilder { HtmlBody = corpsHtml }.ToMessageBody();
+        return message;
+    }
+
+    public async Task EnvoyerAsync(MimeMessage message)
+    {
+        var hote = _configuration["Smtp:Host"];
+        if (string.IsNullOrWhiteSpace(hote))
+        {
+            throw new InvalidOperationException("SMTP non configuré (Smtp:Host vide)");
+        }
 
         var port = Port;
         using var delai = new CancellationTokenSource(Delai);
