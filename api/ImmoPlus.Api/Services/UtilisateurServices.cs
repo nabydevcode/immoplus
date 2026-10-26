@@ -12,6 +12,12 @@ using ImmoPlus.Api.Models.Enums;
 public class UtilisateurServices
 {
     private static readonly TimeSpan DureeValiditeJeton = TimeSpan.FromHours(1);
+    private static readonly TimeSpan DureeValiditeConfirmation = TimeSpan.FromHours(NotificationServices.DureeConfirmationHeures);
+
+    public const string CodeEmailNonConfirme = "EmailNonConfirme";
+    public const string MessageEmailNonConfirme = "Confirmez d'abord votre adresse email : un lien vous a été envoyé.";
+    public const string MessageRenvoiConfirmation =
+        "Si un compte en attente de confirmation existe pour cette adresse, un nouvel email de confirmation vient de lui être envoyé.";
 
     private readonly AppDbContext _context;
     private readonly TokenServices _tokenServices;
@@ -25,12 +31,15 @@ public class UtilisateurServices
     private readonly JournalServices _journal;
     private readonly BoiteEnvoiServices _boite;
     private readonly ICacheStatutUtilisateur _cacheStatut;
+    private readonly DiffusionAdmins _diffusion;
 
     public UtilisateurServices(AppDbContext context, TokenServices tokenServices, EmailServices emailServices,
         IHostEnvironment environment, ILogger<UtilisateurServices> logger,
         NotificationServices notificationServices, ReservationServices reservationServices, LimiteurTentatives limiteur,
-        LiensFrontend liens, JournalServices journal, BoiteEnvoiServices boite, ICacheStatutUtilisateur cacheStatut)
+        LiensFrontend liens, JournalServices journal, BoiteEnvoiServices boite, ICacheStatutUtilisateur cacheStatut,
+        DiffusionAdmins diffusion)
     {
+        _diffusion = diffusion;
         _boite = boite;
         _cacheStatut = cacheStatut;
         _journal = journal;
@@ -128,6 +137,9 @@ public class UtilisateurServices
         }
         // Le tout premier compte du système est lui aussi validé d'office.
         var estPremierUtilisateur = !await _context.Utilisateurs.AnyAsync();
+        // Amorçage : personne ne pourrait valider ce compte, ni donc attendre la confirmation de son email.
+        var valideDOffice = estPremierUtilisateur || role == RoleUtilisateur.Admin;
+        var maintenant = DateTime.UtcNow;
 
         var utilisateur = new Utilisateur
         {
@@ -136,14 +148,137 @@ public class UtilisateurServices
             Email = email,
             MotDePasseHash = BCrypt.Net.BCrypt.HashPassword(dto.MotDePasse),
             Role = role,
-            DateCreation = DateTime.UtcNow,
-            Statut = (estPremierUtilisateur || role == RoleUtilisateur.Admin) ? StatutUtilisateur.Valide : StatutUtilisateur.EnAttente
+            DateCreation = maintenant,
+            Statut = valideDOffice ? StatutUtilisateur.Valide : StatutUtilisateur.EnAttente,
+            EmailConfirme = valideDOffice,
+            DateConfirmationEmail = valideDOffice ? maintenant : null
         };
-
         await _context.Utilisateurs.AddAsync(utilisateur);
-        await EnregistrerCompteAsync();
+        if (valideDOffice)
+        {
+            await EnregistrerCompteAsync();
+            await _diffusion.UtilisateurChangeAsync(utilisateur, "inscrit");
+            return VersDto(utilisateur);
+        }
 
+        // Compte et email de confirmation enregistrés ensemble (boîte d'envoi) : pas de compte sans lien envoyé.
+        var chemin = NouveauJetonConfirmation(utilisateur);
+        await using (var transaction = await _context.Database.BeginTransactionAsync())
+        {
+            await EnregistrerCompteAsync();
+            await _notificationServices.ConfirmationEmailAsync(utilisateur, chemin);
+            await transaction.CommitAsync();
+        }
+        await _diffusion.UtilisateurChangeAsync(utilisateur, "inscrit");
         return VersDto(utilisateur);
+    }
+
+    /// <summary>Nouveau jeton (32 octets aléatoires, seul son hash est gardé, 48 h) ; renvoie le chemin du lien à envoyer.</summary>
+    private static string NouveauJetonConfirmation(Utilisateur utilisateur)
+    {
+        var jeton = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        utilisateur.JetonConfirmationEmailHash = HacherJeton(jeton);
+        utilisateur.JetonConfirmationEmailExpiration = DateTime.UtcNow.Add(DureeValiditeConfirmation);
+        return $"/confirmer-email?jeton={jeton}";
+    }
+
+    /// <summary>
+    /// Lien reçu par email : l'adresse est confirmée (une seule fois) et les admins actifs sont prévenus qu'un compte attend
+    /// leur validation. Un second clic sur le même lien répond « déjà confirmée » sans rien refaire.
+    /// </summary>
+    public async Task<ConfirmationEmailResponseDto> ConfirmerEmailAsync(ConfirmerEmailDto dto)
+    {
+        const string lienInvalide = "Ce lien de confirmation est invalide ou a été remplacé par un plus récent. Demandez un nouvel email de confirmation.";
+        var jeton = dto.Jeton?.Trim() ?? "";
+        if (jeton.Length == 0)
+        {
+            throw new InvalidOperationException(lienInvalide);
+        }
+        var hash = HacherJeton(jeton.ToLowerInvariant());
+        var id = await _context.Utilisateurs.AsNoTracking().Where(u => u.JetonConfirmationEmailHash == hash)
+            .Select(u => (int?)u.Id).FirstOrDefaultAsync() ?? throw new InvalidOperationException(lienInvalide);
+
+        await using var transaction = await _context.Database.BeginTransactionAsync();
+        // Deux clics simultanés : le second attend, puis voit l'adresse déjà confirmée (admins prévenus une seule fois).
+        await _context.Database.VerrouillerAsync(RessourceVerrouillee.Utilisateur, id);
+        var utilisateur = await _context.Utilisateurs.FirstOrDefaultAsync(u => u.Id == id && u.JetonConfirmationEmailHash == hash)
+            ?? throw new InvalidOperationException(lienInvalide);
+
+        if (utilisateur.EmailConfirme)
+        {
+            await transaction.CommitAsync();
+            return new ConfirmationEmailResponseDto
+            {
+                Email = utilisateur.Email,
+                Message = utilisateur.Statut == StatutUtilisateur.Valide
+                    ? "Votre adresse email est déjà confirmée et votre compte est validé : vous pouvez vous connecter."
+                    : "Votre adresse email est déjà confirmée. Votre compte doit maintenant être validé par un administrateur.",
+                Statut = utilisateur.Statut.ToString()
+            };
+        }
+        if (utilisateur.JetonConfirmationEmailExpiration is not { } expiration || expiration < DateTime.UtcNow)
+        {
+            throw new InvalidOperationException("Ce lien de confirmation a expiré. Demandez un nouvel email de confirmation.");
+        }
+
+        utilisateur.EmailConfirme = true;
+        utilisateur.DateConfirmationEmail = DateTime.UtcNow;
+        // Le hash reste (second clic → « déjà confirmée ») ; sans expiration, il ne confirme plus rien.
+        utilisateur.JetonConfirmationEmailExpiration = null;
+        await _context.SaveChangesAsync();
+
+        if (utilisateur.Statut == StatutUtilisateur.EnAttente)
+        {
+            var admins = await _context.Utilisateurs.AsNoTracking()
+                .Where(u => u.Role == RoleUtilisateur.Admin && u.Statut == StatutUtilisateur.Valide)
+                .OrderBy(u => u.Id).ToListAsync();
+            foreach (var admin in admins)
+            {
+                await _notificationServices.NouveauCompteAValiderAsync(admin, utilisateur);
+            }
+        }
+        await transaction.CommitAsync();
+        await _diffusion.UtilisateurChangeAsync(utilisateur, "emailConfirme");
+        await _journal.EnregistrerPourAsync(utilisateur.Id, utilisateur.Nom, utilisateur.Role.ToString(), "utilisateur.confirmer-email",
+            "Utilisateur", utilisateur.Id, $"Adresse email de {utilisateur.Nom} ({utilisateur.Email}, {utilisateur.Role}) confirmée");
+
+        return new ConfirmationEmailResponseDto
+        {
+            Email = utilisateur.Email,
+            Message = utilisateur.Statut == StatutUtilisateur.EnAttente
+                ? "Adresse confirmée. Votre compte doit maintenant être validé par un administrateur : vous recevrez un email dès qu'il le sera."
+                : "Adresse confirmée.",
+            Statut = utilisateur.Statut.ToString()
+        };
+    }
+
+    /// <summary>
+    /// Nouvel email de confirmation (l'ancien lien ne sert plus). Toujours la même réponse, que le compte existe ou non ;
+    /// au-delà de 3 renvois par heure pour une adresse, plus aucun email (anti-spam de la boîte du destinataire).
+    /// </summary>
+    public async Task RenvoyerConfirmationAsync(RenvoyerConfirmationDto dto)
+    {
+        if (!await _limiteur.AutoriserRenvoiConfirmationAsync(dto.Email))
+        {
+            _logger.LogWarning("Trop de renvois de l'email de confirmation pour une même adresse : demande ignorée");
+            return;
+        }
+        var utilisateur = await TrouverParEmailAsync(dto.Email);
+        if (utilisateur is null || utilisateur.EmailConfirme || utilisateur.Statut != StatutUtilisateur.EnAttente)
+        {
+            _logger.LogInformation("Renvoi de confirmation demandé pour une adresse inconnue ou déjà confirmée");
+            return;
+        }
+
+        var chemin = NouveauJetonConfirmation(utilisateur);
+        await using (var transaction = await _context.Database.BeginTransactionAsync())
+        {
+            await _context.SaveChangesAsync();
+            await _notificationServices.ConfirmationEmailAsync(utilisateur, chemin);
+            await transaction.CommitAsync();
+        }
+        await _journal.EnregistrerPourAsync(utilisateur.Id, utilisateur.Nom, utilisateur.Role.ToString(), "utilisateur.renvoyer-confirmation",
+            "Utilisateur", utilisateur.Id, $"Nouvel email de confirmation envoyé à {utilisateur.Email}");
     }
 
     /// <summary>Un admin crée un autre admin, validé d'office ; le nouvel admin reçoit un email de bienvenue.</summary>
@@ -158,10 +293,14 @@ public class UtilisateurServices
             MotDePasseHash = BCrypt.Net.BCrypt.HashPassword(dto.MotDePasse),
             Role = RoleUtilisateur.Admin,
             Statut = StatutUtilisateur.Valide,
-            DateCreation = DateTime.UtcNow
+            DateCreation = DateTime.UtcNow,
+            // Adresse saisie par un admin : confirmée d'office (pas d'email de confirmation).
+            EmailConfirme = true,
+            DateConfirmationEmail = DateTime.UtcNow
         };
         await _context.Utilisateurs.AddAsync(admin);
         await EnregistrerCompteAsync();
+        await _diffusion.UtilisateurChangeAsync(admin, "adminCree");
         await _notificationServices.BienvenueAdminAsync(admin);
         await _journal.EnregistrerAsync("utilisateur.creer-admin", "Utilisateur", admin.Id, $"Compte administrateur créé pour {admin.Nom} ({admin.Email})");
         return VersDto(admin);
@@ -257,10 +396,17 @@ public class UtilisateurServices
         }
         await _limiteur.ReinitialiserConnexionAsync(dto.Email);
 
+        // Seul un compte en attente peut ne pas être confirmé (comptes existants et admins : confirmés d'office).
+        var emailNonConfirme = utilisateur.Statut == StatutUtilisateur.EnAttente && !utilisateur.EmailConfirme;
         if (utilisateur.Statut != StatutUtilisateur.Valide)
         {
             await _journal.EnregistrerPourAsync(utilisateur.Id, utilisateur.Nom, utilisateur.Role.ToString(), "connexion.refusee", "Utilisateur",
-                utilisateur.Id, $"Connexion refusée : compte {utilisateur.Statut}");
+                utilisateur.Id, $"Connexion refusée : compte {utilisateur.Statut}{(emailNonConfirme ? " (email non confirmé)" : "")}");
+        }
+        if (emailNonConfirme)
+        {
+            // Code testé par le front : message dédié et bouton « Renvoyer l'email de confirmation ».
+            throw new ConflictException(MessageEmailNonConfirme, CodeEmailNonConfirme);
         }
         if (utilisateur.Statut == StatutUtilisateur.EnAttente)
         {
@@ -287,6 +433,8 @@ public class UtilisateurServices
             Statut = utilisateur.Statut.ToString(),
             NotificationsSms = utilisateur.NotificationsSms,
             IdentiteVerifiee = utilisateur.IdentiteVerifiee,
+            EmailConfirme = utilisateur.EmailConfirme,
+            DateConfirmationEmail = utilisateur.DateConfirmationEmail,
             Token = _tokenServices.GenererToken(utilisateur)
         };
     }
@@ -305,9 +453,15 @@ public class UtilisateurServices
                 ? "Ce compte est désactivé : utilisez la réactivation"
                 : "Ce compte est déjà validé");
         }
+        // L'admin ne valide qu'une adresse dont l'utilisateur a prouvé qu'elle est la sienne.
+        if (!utilisateur.EmailConfirme && utilisateur.Role != RoleUtilisateur.Admin)
+        {
+            throw new ConflictException("L'adresse email n'est pas encore confirmée : l'utilisateur doit d'abord cliquer sur le lien reçu par email");
+        }
         utilisateur.Statut = StatutUtilisateur.Valide;
         await _context.SaveChangesAsync();
         await _cacheStatut.InvaliderAsync(utilisateur.Id);
+        await _diffusion.UtilisateurChangeAsync(utilisateur, "valide");
         await _notificationServices.CompteValideAsync(utilisateur);
         await _journal.EnregistrerAsync("utilisateur.valider", "Utilisateur", id, $"Compte de {utilisateur.Nom} ({utilisateur.Email}, {utilisateur.Role}) validé");
 
@@ -329,6 +483,12 @@ public class UtilisateurServices
         utilisateur.Statut = StatutUtilisateur.Refuse;
         await _context.SaveChangesAsync();
         await _cacheStatut.InvaliderAsync(utilisateur.Id);
+        await _diffusion.UtilisateurChangeAsync(utilisateur, "refuse");
+        // Adresse non confirmée : rien ne prouve qu'elle appartient à la personne inscrite, on ne lui écrit pas.
+        if (utilisateur.EmailConfirme)
+        {
+            await _notificationServices.InscriptionRefuseeAsync(utilisateur);
+        }
         await _journal.EnregistrerAsync("utilisateur.refuser", "Utilisateur", id, $"Inscription de {utilisateur.Nom} ({utilisateur.Email}) refusée");
 
         return VersDto(utilisateur);
@@ -364,6 +524,7 @@ public class UtilisateurServices
         await _context.SaveChangesAsync();
         // Sessions coupées tout de suite sur toutes les instances (cache du statut effacé).
         await _cacheStatut.InvaliderAsync(utilisateur.Id);
+        await _diffusion.UtilisateurChangeAsync(utilisateur, "desactive");
         await _notificationServices.CompteDesactiveAsync(utilisateur, motif);
 
         var dto = VersDto(utilisateur);
@@ -393,13 +554,14 @@ public class UtilisateurServices
         utilisateur.DateDesactivation = null;
         await _context.SaveChangesAsync();
         await _cacheStatut.InvaliderAsync(utilisateur.Id);
+        await _diffusion.UtilisateurChangeAsync(utilisateur, "reactive");
         await _notificationServices.CompteReactiveAsync(utilisateur);
         await _journal.EnregistrerAsync("utilisateur.reactiver", "Utilisateur", id, $"Compte de {utilisateur.Nom} ({utilisateur.Email}) réactivé");
         return VersDto(utilisateur);
     }
 
     public async Task<PagedResultDto<UtilisateurResponseDto>> ListerAsync(int page = 1, int taille = 20,
-        string? role = null, string? statut = null, string? recherche = null)
+        string? role = null, string? statut = null, string? recherche = null, bool? emailConfirme = null)
     {
         if (page < 1) page = 1;
         // Au-delà de 100, on plafonne (au lieu de revenir silencieusement à 20) : le client voit TotalPages et pagine.
@@ -421,6 +583,11 @@ public class UtilisateurServices
                 throw new InvalidOperationException("Statut invalide. Utilisez EnAttente, Valide, Refuse ou Desactive");
             }
             requete = requete.Where(u => u.Statut == st);
+        }
+        // Onglets admin : « À valider » = EnAttente + confirmé, « Email non confirmé » = EnAttente + non confirmé.
+        if (emailConfirme is { } confirme)
+        {
+            requete = requete.Where(u => u.EmailConfirme == confirme);
         }
         if (!string.IsNullOrWhiteSpace(recherche))
         {
@@ -448,7 +615,9 @@ public class UtilisateurServices
                 MotifDesactivation = u.MotifDesactivation,
                 DateDesactivation = u.DateDesactivation,
                 NotificationsSms = u.NotificationsSms,
-                IdentiteVerifiee = u.IdentiteVerifiee
+                IdentiteVerifiee = u.IdentiteVerifiee,
+                EmailConfirme = u.EmailConfirme,
+                DateConfirmationEmail = u.DateConfirmationEmail
             })
             .ToListAsync();
 
@@ -478,7 +647,9 @@ public class UtilisateurServices
         MotifDesactivation = u.MotifDesactivation,
         DateDesactivation = u.DateDesactivation,
         NotificationsSms = u.NotificationsSms,
-        IdentiteVerifiee = u.IdentiteVerifiee
+        IdentiteVerifiee = u.IdentiteVerifiee,
+        EmailConfirme = u.EmailConfirme,
+        DateConfirmationEmail = u.DateConfirmationEmail
     };
 
     public async Task<UtilisateurResponseDto> ObtenirProfilAsync(int id) => VersDto(await ChargerAsync(id));
@@ -494,6 +665,8 @@ public class UtilisateurServices
             throw new ConflictException("Un utilisateur avec cet email existe déjà");
         }
 
+        // Seuls nom, téléphone et email apparaissent dans la liste des admins : la préférence SMS ne la rafraîchit pas.
+        var identiteModifiee = nom != utilisateur.Nom || telephone != utilisateur.Telephone || email != utilisateur.Email;
         utilisateur.Nom = nom;
         utilisateur.Telephone = telephone;
         utilisateur.Email = email;
@@ -503,6 +676,10 @@ public class UtilisateurServices
             utilisateur.NotificationsSms = sms;
         }
         await EnregistrerCompteAsync();
+        if (identiteModifiee)
+        {
+            await _diffusion.UtilisateurChangeAsync(utilisateur, "profilModifie");
+        }
         return VersDto(utilisateur);
     }
 

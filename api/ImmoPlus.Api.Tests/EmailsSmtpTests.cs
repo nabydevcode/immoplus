@@ -66,9 +66,11 @@ public class EmailsSmtpTests
         Assert.All(enFile, m => { Assert.Equal(StatutMessageSortant.EnAttente, m.Statut); Assert.Equal(0, m.Tentatives); });
         Assert.Empty(f.Smtp.EmailsPour(locataire.Email));
 
-        // L'administrateur configure le SMTP : tout part au passage suivant.
+        // L'administrateur configure le SMTP : tout part au passage suivant (y compris l'alerte « compte à valider » de l'admin).
+        var toutEnFile = await f.LireBaseAsync(db => db.MessagesSortants.CountAsync(m => m.Statut == StatutMessageSortant.EnAttente));
+        Assert.True(toutEnFile > enFile.Count);
         f.Services.GetRequiredService<IConfiguration>()["Smtp:Host"] = "127.0.0.1";
-        Assert.Equal(enFile.Count, await f.EnvoyerMessagesAsync());
+        Assert.Equal(toutEnFile, await f.EnvoyerMessagesAsync());
         Assert.Equal(enFile.Count, f.Smtp.EmailsPour(locataire.Email).Count);
         Assert.All(await MessagesPourAsync(f, locataire.Email), m => { Assert.Equal(StatutMessageSortant.Envoye, m.Statut); Assert.Equal(1, m.Tentatives); });
     }

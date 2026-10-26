@@ -4,6 +4,7 @@ import { apiClient } from "../../api/client";
 import type { UtilisateurDto } from "../../types/models";
 import { MessageErreur } from "./ui";
 import { classeBoutonPrincipal, classeBoutonSecondaire, classeChamp, messageErreur } from "./outils";
+import ChampMotDePasse from "../compte/ChampMotDePasse";
 
 /** Formulaire en ligne : un admin crée un autre compte administrateur, actif immédiatement. */
 export default function CreationAdministrateur({
@@ -81,8 +82,7 @@ export default function CreationAdministrateur({
         </label>
         <label className="text-sm font-medium text-gray-700">
           Mot de passe provisoire
-          <input
-            type="password"
+          <ChampMotDePasse
             value={motDePasse}
             onChange={(e) => setMotDePasse(e.target.value)}
             required

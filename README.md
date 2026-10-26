@@ -61,6 +61,16 @@ Les données sont dans le volume Docker `immoplus_postgres-data` : elles persist
 
 Le client Blazor (`web/ImmoPlus.Web`) n'est pas (encore) dockerisé.
 
+### Parcours d'inscription (confirmation de l'email, puis validation par l'admin)
+
+1. **Inscription** (`POST /utilisateur/inscription`, Locataire ou Bailleur) : compte `EnAttente`, `emailConfirme=false` ; email « Confirmez votre adresse email » avec un lien `{Frontend}/confirmer-email?jeton=…` valable 48 h (jeton aléatoire de 32 octets, seul son hash SHA-256 est en base). Aucune alerte aux admins à ce stade.
+2. **Confirmation** (`POST /utilisateur/confirmer-email` `{ jeton }`, public) : `emailConfirme=true` et `dateConfirmationEmail` ; chaque admin actif reçoit l'email (et le SMS) « Nouveau compte à valider : {nom} ({rôle}) » avec un lien vers `/admin/utilisateurs?q={email}`. Réponse `200 { message, statut }` ; un second clic sur le même lien répond « déjà confirmée » (200, sans nouvel effet) ; lien inconnu, remplacé par un renvoi ou expiré → 400 invitant à demander un nouvel email.
+3. **Renvoi** (`POST /utilisateur/renvoyer-confirmation` `{ email }`, public) : toujours 200 avec le même message (ne révèle pas si le compte existe) ; nouvel email seulement pour un compte en attente non confirmé (l'ancien lien ne sert plus), 3 renvois par adresse et par heure au plus (compteurs Redis partagés si Redis est actif).
+4. **Validation** (Admin › Utilisateurs, onglet « À valider » = `statut=EnAttente&emailConfirme=true`) : `POST /utilisateur/{id}/valider` répond 409 tant que l'email n'est pas confirmé ; sinon email « Votre compte ImmoPlus est validé » (lien de connexion) + SMS. Un refus envoie « Votre inscription n'a pas été retenue » si l'adresse est confirmée. Les comptes non confirmés restent visibles (onglet « Email non confirmé », `emailConfirme=false`) et ne sont jamais supprimés automatiquement.
+5. **Connexion** avant confirmation : `409 { "message": "Confirmez d'abord votre adresse email : un lien vous a été envoyé.", "code": "EmailNonConfirme" }` ; confirmé mais pas encore validé : message habituel « en attente de validation ».
+
+Confirmés d'office (aucun email de confirmation) : les comptes antérieurs à cette étape (migration `ConfirmationEmail`), le premier compte / l'amorçage admin et les admins créés par un admin. Journal des actions : `utilisateur.confirmer-email`, `utilisateur.renvoyer-confirmation`.
+
 ### Récupérer un accès admin
 
 Seul un administrateur peut créer un autre administrateur (Admin › Utilisateurs › « Créer un administrateur », route `POST /utilisateur/admin`) : l'inscription publique refuse le rôle Admin dès qu'il existe un admin actif. S'il n'en reste aucun (tous désactivés ou supprimés), l'inscription d'un compte Admin redevient possible et il est validé d'office.
@@ -69,7 +79,7 @@ En secours (mot de passe perdu par le dernier admin…), promouvoir un compte ex
 
 ```bash
 docker compose exec -T postgres psql -U immoplus immoplus -c \
-  "UPDATE \"Utilisateurs\" SET \"Role\"=0, \"Statut\"=1 WHERE lower(\"Email\")=lower('prenom.nom@exemple.com');"
+  "UPDATE \"Utilisateurs\" SET \"Role\"=0, \"Statut\"=1, \"EmailConfirme\"=TRUE WHERE lower(\"Email\")=lower('prenom.nom@exemple.com');"
 ```
 
 (`Role=0` = Admin, `Statut=1` = Valide ; la commande doit afficher `UPDATE 1`.) Le compte peut ensuite utiliser « Mot de passe oublié ». En PostgreSQL, les noms de tables et de colonnes créés par EF Core gardent leurs majuscules : il faut les écrire entre guillemets doubles (`"Utilisateurs"`, `"Email"`).
@@ -511,7 +521,7 @@ Les tests automatisés de l'API (`api/ImmoPlus.Api.Tests`, xUnit) démarrent l'A
 - base PostgreSQL **temporaire** pour chaque classe de tests (`immoplus_test_…`, créée vide, migrée, puis supprimée à la fin) : la base réelle `immoplus` n'est jamais ouverte, l'API Docker peut tourner en même temps. Par défaut, le serveur PostgreSQL est un conteneur jetable `postgres:17-alpine` lancé par Testcontainers (Docker Desktop doit tourner) et détruit en fin de lancement ;
 - emails envoyés à un faux serveur SMTP interne aux tests (rien ne part vers MailHog) ;
 - services planifiés (rappels, boîte d'envoi) désactivés : les tests les déclenchent eux-mêmes (`EmailsPourAsync` vide la boîte d'envoi avant de lire les emails reçus) ; les délais (24 h, 48 h, fin de séjour, préavis) sont simulés en reculant les dates dans la base de test ;
-- stockage S3 et Redis testés contre des conteneurs jetables **Garage** (`dxflrs/garage:v2.4.1`) et **Redis** (`redis:8.8-alpine`), démarrés une fois par lancement (jamais les services du compose) : `StockageS3Tests`, `RedisTests` (compteurs et cache partagés entre deux instances), `BoiteEnvoiTests` (envoi, nouvelles tentatives, abandon, pas de doublon avec deux dépileurs concurrents), `ServicesPlanifiesTests` (un seul passage avec plusieurs instances), `PaginationPerformancesTests` (pagination, onglets, cache de sortie, compression, cache des photos, santé, corrélation, métriques). 96 tests au 19/10/2026.
+- stockage S3 et Redis testés contre des conteneurs jetables **Garage** (`dxflrs/garage:v2.4.1`) et **Redis** (`redis:8.8-alpine`), démarrés une fois par lancement (jamais les services du compose) : `StockageS3Tests`, `RedisTests` (compteurs et cache partagés entre deux instances), `BoiteEnvoiTests` (envoi, nouvelles tentatives, abandon, pas de doublon avec deux dépileurs concurrents), `ServicesPlanifiesTests` (un seul passage avec plusieurs instances), `PaginationPerformancesTests` (pagination, onglets, cache de sortie, compression, cache des photos, santé, corrélation, métriques), `ConfirmationEmailTests` (inscription → lien de confirmation → admins prévenus → validation → email ; jetons expiré/remplacé/inconnu, renvoi neutre et limité, migration des comptes existants). Les comptes de test (`Donnees.CompteAsync`) passent par la confirmation d'email, jeton lu dans la boîte d'envoi. 139 tests au 26/10/2026.
 
 Sur le Mac (SDK .NET 10) :
 

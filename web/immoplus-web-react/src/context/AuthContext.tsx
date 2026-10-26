@@ -48,7 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             ? "Trop de tentatives de connexion. Réessayez dans quelques minutes."
             : err.message
           : "Email ou mot de passe incorrect.";
-      return { succes: false, erreur: message };
+      return { succes: false, erreur: message, code: err instanceof ApiError ? err.code : null };
     }
   };
 

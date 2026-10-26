@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { Badge, EnTete, MessageErreur } from "../../components/admin/ui";
 import { formaterDate, formaterMontant, formaterReference, useChargement } from "../../components/admin/outils";
+import { useTempsReel } from "../../components/messages/tempsReel";
 import type { TableauDeBordDto } from "../../types/models";
 
 const refDossier = (id: number) => `Dossier n° ${formaterReference(id)}`;
@@ -117,7 +118,11 @@ function LigneAFaire({
 }
 
 export default function TableauDeBord() {
-  const { donnees: tdb, chargement, erreur } = useChargement<TableauDeBordDto>("admin/tableau-de-bord");
+  const { donnees: tdb, chargement, erreur, recharger } = useChargement<TableauDeBordDto>("admin/tableau-de-bord");
+  // « Comptes à valider » à jour sans actualiser (inscription confirmée, compte validé par un autre admin…).
+  useTempsReel("utilisateurChange", (e) => {
+    if (e.type !== "profilModifie") recharger();
+  });
 
   return (
     <>

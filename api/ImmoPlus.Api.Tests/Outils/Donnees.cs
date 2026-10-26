@@ -2,6 +2,7 @@ namespace ImmoPlus.Api.Tests.Outils;
 
 using System.Net;
 using ImmoPlus.Api.Dtos;
+using Microsoft.EntityFrameworkCore;
 
 /// <summary>Création des comptes, annonces et réservations de test, uniquement par l'API (comme le ferait le front).</summary>
 public static class Donnees
@@ -44,7 +45,7 @@ public static class Donnees
             f.CreateClient().AvecJeton(utilisateur.Token!));
     }
 
-    /// <summary>Inscription (compte en attente), validation par l'admin, puis connexion.</summary>
+    /// <summary>Inscription (compte en attente), confirmation de l'email par le lien reçu, validation par l'admin, puis connexion.</summary>
     public static async Task<Compte> CompteAsync(this ImmoPlusFactory f, string role, string? nom = null)
     {
         var admin = await f.AdminAsync();
@@ -53,8 +54,22 @@ public static class Donnees
         {
             nom = nom ?? $"{role} {email[..12]}", telephone = "621000000", email, motDePasse = Api.MotDePasse, role
         }).Attendre<UtilisateurResponseDto>(HttpStatusCode.Created);
+        await f.CreateClient().PostJson("/utilisateur/confirmer-email", new { jeton = await f.JetonConfirmationAsync(email) })
+            .Verifier(HttpStatusCode.OK);
         await admin.Client.PostJson($"/utilisateur/{cree.Id}/valider").Verifier(HttpStatusCode.OK);
         return await f.ConnecterAsync(email, Api.MotDePasse);
+    }
+
+    /// <summary>
+    /// Jeton du dernier email « Confirmez votre adresse email » mis en file pour cette adresse (lien {Frontend}/confirmer-email?jeton=…).
+    /// Lu dans la boîte d'envoi : fonctionne aussi quand le SMTP des tests est coupé ou en panne.
+    /// </summary>
+    public static async Task<string> JetonConfirmationAsync(this ImmoPlusFactory f, string email)
+    {
+        var contenu = await f.LireBaseAsync(db => db.MessagesSortants.AsNoTracking()
+            .Where(m => m.Destinataire == email && m.Evenement == "ConfirmationEmail")
+            .OrderByDescending(m => m.Id).Select(m => m.Contenu).FirstAsync());
+        return System.Text.RegularExpressions.Regex.Match(contenu, "/confirmer-email\\?jeton=([0-9a-f]{64})").Groups[1].Value;
     }
 
     public static Task<Compte> BailleurAsync(this ImmoPlusFactory f) => f.CompteAsync("Bailleur");

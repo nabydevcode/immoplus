@@ -8,7 +8,11 @@ export interface AuthState {
 }
 
 export interface AuthContextValue extends AuthState {
-  connexion: (email: string, motDePasse: string) => Promise<{ succes: boolean; erreur?: string; role?: string }>;
+  /** `code` : code d'erreur de l'API (ex. « EmailNonConfirme » : adresse à confirmer avant la connexion). */
+  connexion: (
+    email: string,
+    motDePasse: string,
+  ) => Promise<{ succes: boolean; erreur?: string; role?: string; code?: string | null }>;
   deconnexion: () => void;
   /** Met à jour le nom affiché (navbar, menu admin) après une modification du profil. */
   mettreAJourNom: (nom: string) => void;

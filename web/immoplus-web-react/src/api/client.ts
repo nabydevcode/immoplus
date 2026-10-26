@@ -4,10 +4,27 @@ export const API_URL = import.meta.env.VITE_API_URL ?? "/api";
 export class ApiError extends Error {
   /** Code HTTP de la réponse refusée (404, 403…). */
   readonly statut: number | null;
-  constructor(message: string, statut: number | null = null) {
+  /** Code d'erreur métier renvoyé par l'API à côté du message (ex. « EmailNonConfirme »), null sinon. */
+  readonly code: string | null;
+  constructor(message: string, statut: number | null = null, code: string | null = null) {
     super(message);
     this.statut = statut;
+    this.code = code;
   }
+}
+
+/** Lit le corps d'erreur `{ message, code? }` d'une réponse refusée (message par défaut « Erreur 404 »…). */
+async function lireErreur(reponse: Response) {
+  let message = `Erreur ${reponse.status}`;
+  let code: string | null = null;
+  try {
+    const corps = await reponse.json();
+    message = corps?.message ?? message;
+    code = typeof corps?.code === "string" ? corps.code : null;
+  } catch {
+    // réponse sans corps JSON exploitable
+  }
+  return { message, code };
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -20,13 +37,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const reponse = await fetch(`${API_URL}/${path}`, { ...options, headers });
 
   if (!reponse.ok) {
-    let message = `Erreur ${reponse.status}`;
-    try {
-      const corps = await reponse.json();
-      message = corps?.message ?? message;
-    } catch {
-      // réponse sans corps JSON exploitable
-    }
+    const { message, code } = await lireErreur(reponse);
     // Session refusée alors qu'on était connecté (compte désactivé par un admin, jeton expiré) :
     // on efface la session et on renvoie vers la connexion avec l'explication.
     if (reponse.status === 401 && token && !path.startsWith("utilisateur/connexion")) {
@@ -35,7 +46,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       const retour = encodeURIComponent(window.location.pathname + window.location.search);
       window.location.assign(`/login?raison=${raison}&retour=${retour}`);
     }
-    throw new ApiError(message, reponse.status);
+    throw new ApiError(message, reponse.status, code);
   }
 
   if (reponse.status === 204) return undefined as T;
@@ -62,14 +73,8 @@ export async function telechargerFichier(path: string, nomFichier: string) {
   });
   if (!reponse.ok) {
     // Refus expliqué par l'API (ex. 409 « quittance disponible une fois le loyer entièrement payé »).
-    let message = `Erreur ${reponse.status}`;
-    try {
-      const corps = await reponse.json();
-      message = corps?.message ?? message;
-    } catch {
-      // réponse sans corps JSON exploitable
-    }
-    throw new ApiError(message, reponse.status);
+    const { message, code } = await lireErreur(reponse);
+    throw new ApiError(message, reponse.status, code);
   }
 
   const url = URL.createObjectURL(await reponse.blob());

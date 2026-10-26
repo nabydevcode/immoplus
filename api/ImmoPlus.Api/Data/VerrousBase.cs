@@ -17,7 +17,9 @@ public enum RessourceVerrouillee
     /// <summary>Location : paiement des loyers.</summary>
     Location = 4,
     /// <summary>Traitement planifié (id : VerrouPlanifie.Rappels…) : un seul exécutant sur l'ensemble des instances.</summary>
-    ServicePlanifie = 5
+    ServicePlanifie = 5,
+    /// <summary>Compte utilisateur : confirmation de l'adresse email (admins prévenus une seule fois).</summary>
+    Utilisateur = 6
 }
 
 /// <summary>

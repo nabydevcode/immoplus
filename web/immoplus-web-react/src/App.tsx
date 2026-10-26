@@ -12,6 +12,7 @@ const Login = lazy(() => import("./pages/Login"));
 const Inscription = lazy(() => import("./pages/Inscription"));
 const MotDePasseOublie = lazy(() => import("./pages/MotDePasseOublie"));
 const ReinitialiserMotDePasse = lazy(() => import("./pages/ReinitialiserMotDePasse"));
+const ConfirmerEmail = lazy(() => import("./pages/ConfirmerEmail"));
 const Annonces = lazy(() => import("./pages/Annonces"));
 const DetailAppartement = lazy(() => import("./pages/DetailAppartement"));
 const Candidater = lazy(() => import("./pages/Candidater"));
@@ -102,6 +103,14 @@ export default function App() {
               element={
                 <Suspense fallback={<ChargementPage />}>
                   <ReinitialiserMotDePasse />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/confirmer-email"
+              element={
+                <Suspense fallback={<ChargementPage />}>
+                  <ConfirmerEmail />
                 </Suspense>
               }
             />

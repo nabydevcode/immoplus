@@ -6,7 +6,8 @@ using ImmoPlus.Api.Exceptions;
 
 /// <summary>
 /// Freine la recherche de mots de passe par essais successifs. Connexion : 5 échecs par email ou 20 par adresse IP en 15 min
-/// bloquent 15 min (429). Mot de passe oublié : 5 demandes par email en 15 min. Compteurs dans Redis quand Redis:Connexion
+/// bloquent 15 min (429). Mot de passe oublié : 5 demandes par email en 15 min. Renvoi de l'email de confirmation :
+/// 3 par email et par heure. Compteurs dans Redis quand Redis:Connexion
 /// est renseigné (partagés par toutes les instances de l'API), sinon en mémoire (une seule instance).
 /// </summary>
 public class LimiteurTentatives
@@ -15,6 +16,8 @@ public class LimiteurTentatives
     public const int MaxEchecsParEmail = 5;
     public const int MaxEchecsParIp = 20;
     public const int MaxDemandesReinitialisation = 5;
+    public const int MaxRenvoisConfirmation = 3;
+    public static readonly TimeSpan FenetreRenvoiConfirmation = TimeSpan.FromHours(1);
 
     private readonly ICompteursTentatives _compteurs;
 
@@ -49,6 +52,11 @@ public class LimiteurTentatives
     /// <summary>true si un email de réinitialisation peut encore partir pour cet email (la demande est alors comptée).</summary>
     public Task<bool> AutoriserReinitialisationAsync(string? email) =>
         _compteurs.CompterSiPossibleAsync($"reinitialisation:email:{(email ?? "").Trim().ToLowerInvariant()}", MaxDemandesReinitialisation, Fenetre);
+
+    /// <summary>true si l'email de confirmation peut encore être renvoyé à cette adresse (le renvoi est alors compté).</summary>
+    public Task<bool> AutoriserRenvoiConfirmationAsync(string? email) =>
+        _compteurs.CompterSiPossibleAsync($"confirmation:email:{(email ?? "").Trim().ToLowerInvariant()}", MaxRenvoisConfirmation,
+            FenetreRenvoiConfirmation);
 }
 
 /// <summary>Compteurs à fenêtre glissante du limiteur (mémoire locale ou Redis).</summary>

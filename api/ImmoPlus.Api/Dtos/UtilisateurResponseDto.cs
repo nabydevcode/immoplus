@@ -15,6 +15,10 @@ public class UtilisateurResponseDto
     public bool NotificationsSms { get; set; }
     /// <summary>Pièce d'identité contrôlée par un admin (badge « Identité vérifiée »).</summary>
     public bool IdentiteVerifiee { get; set; }
+    /// <summary>Adresse email confirmée par le lien reçu à l'inscription (condition de la validation par l'admin).</summary>
+    public bool EmailConfirme { get; set; }
+    /// <summary>Date de la confirmation (null : non confirmée, ou compte antérieur à la confirmation d'email).</summary>
+    public DateTime? DateConfirmationEmail { get; set; }
 
     /// <summary>Désactivation d'un hôte uniquement (null sinon) : réservations non confirmées annulées.</summary>
     public int? ReservationsAnnulees { get; set; }

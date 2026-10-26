@@ -57,6 +57,7 @@ builder.Services.AddDbContext<AppDbContext>((services, options) =>
         .AddInterceptors(services.GetRequiredService<RequetesLentesInterceptor>()));
 
 builder.Services.AddScoped<UtilisateurServices>();
+builder.Services.AddScoped<DiffusionAdmins>();
 builder.Services.AddScoped<AppartementServices>();
 builder.Services.AddScoped<TokenServices>();
 builder.Services.AddScoped<EmailServices>();
@@ -432,7 +433,20 @@ app.MapPost("/utilisateur/inscription", async (InscriptionDto dto, UtilisateurSe
     return Results.Created($"/utilisateur/{utilisateur.Id}", utilisateur);
 });
 
+// Lien de l'email d'inscription ({Frontend}/confirmer-email?jeton=…) : 200 { message, statut } (aussi si déjà confirmée),
+// 400 si le lien est inconnu, remplacé ou expiré.
+app.MapPost("/utilisateur/confirmer-email", async (ConfirmerEmailDto dto, UtilisateurServices services) =>
+    Results.Ok(await services.ConfirmerEmailAsync(dto)));
+
+// Toujours 200 et le même message (ne révèle pas si le compte existe) ; 3 renvois par adresse et par heure au plus.
+app.MapPost("/utilisateur/renvoyer-confirmation", async (RenvoyerConfirmationDto dto, UtilisateurServices services) =>
+{
+    await services.RenvoyerConfirmationAsync(dto);
+    return Results.Ok(new { message = UtilisateurServices.MessageRenvoiConfirmation });
+});
+
 // 5 échecs par email ou 20 par adresse IP en 15 min → 429 pendant 15 min.
+// Compte dont l'email n'est pas confirmé : 409 { message, code: "EmailNonConfirme" }.
 app.MapPost("/utilisateur/connexion", async (ConnexionDto dto, UtilisateurServices services, HttpContext contexte) =>
 {
     return Results.Ok(await services.ConnexionAsync(dto, contexte.Connection.RemoteIpAddress?.ToString()));
@@ -450,9 +464,10 @@ app.MapPost("/utilisateur/reinitialiser-mot-de-passe", async (ReinitialisationMo
     return Results.NoContent();
 });
 
-// Filtres facultatifs : role (Locataire/Bailleur/Admin), statut (EnAttente/Valide/Refuse/Desactive), q (nom, email ou téléphone). 100 par page au plus.
-app.MapGet("/utilisateur/lister", async (UtilisateurServices services, int? page, int? taille, string? role, string? statut, string? q) =>
-    Results.Ok(await services.ListerAsync(page ?? 1, taille ?? 20, role, statut, q)))
+// Filtres facultatifs : role (Locataire/Bailleur/Admin), statut (EnAttente/Valide/Refuse/Desactive), q (nom, email ou téléphone),
+// emailConfirme (true/false ; « À valider » = statut=EnAttente&emailConfirme=true). 100 par page au plus.
+app.MapGet("/utilisateur/lister", async (UtilisateurServices services, int? page, int? taille, string? role, string? statut, string? q, bool? emailConfirme) =>
+    Results.Ok(await services.ListerAsync(page ?? 1, taille ?? 20, role, statut, q, emailConfirme)))
     .RequireAuthorization(policy => policy.RequireRole("Admin"));
 
 // Seul un admin crée un admin (l'inscription publique refuse ce rôle dès qu'un admin actif existe).
@@ -462,6 +477,7 @@ app.MapPost("/utilisateur/admin", async (CreerAdminDto dto, UtilisateurServices 
     return Results.Created($"/utilisateur/{admin.Id}", admin);
 }).RequireAuthorization(policy => policy.RequireRole("Admin"));
 
+// 409 tant que l'utilisateur n'a pas confirmé son adresse email (sauf compte Admin).
 app.MapPost("/utilisateur/{id:int}/valider", async (int id, UtilisateurServices services) =>
     Results.Ok(await services.ValiderAsync(id))).RequireAuthorization(policy => policy.RequireRole("Admin"));
 

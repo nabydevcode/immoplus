@@ -7,6 +7,7 @@ const TITRES: [string, string][] = [
   ["/inscription", "Inscription"],
   ["/mot-de-passe-oublie", "Mot de passe oublié"],
   ["/reinitialiser-mot-de-passe", "Nouveau mot de passe"],
+  ["/confirmer-email", "Confirmation de l'adresse email"],
   ["/annonces/longue-duree", "Location longue durée"],
   ["/annonces/sejour-court", "Séjours courts"],
   ["/annonces/:type/:id/candidater", "Candidater"],

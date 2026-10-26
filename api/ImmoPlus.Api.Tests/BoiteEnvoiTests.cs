@@ -60,20 +60,21 @@ public class BoiteEnvoiTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFactory>
 
         f.Smtp.RefuserProchainsEnvois(1);
         await f.EnvoyerMessagesAsync();
-        var echec = (await MessagesPourAsync(locataire.Email)).Single();
+        // Le compte a aussi reçu ses emails d'inscription (confirmation, validation), déjà partis : seul compte ici celui de la panne.
+        var echec = (await MessagesPourAsync(locataire.Email)).Single(m => m.Sujet!.Contains("désactivé"));
         Assert.Equal(StatutMessageSortant.Echec, echec.Statut);
         Assert.Equal(1, echec.Tentatives);
         Assert.NotNull(echec.DerniereErreur);
         // Nouvel essai dans 1 min : un passage immédiat ne le reprend pas.
         Assert.InRange(echec.ProchaineTentative - echec.DateDerniereTentative!.Value, TimeSpan.FromSeconds(55), TimeSpan.FromSeconds(65));
         await f.EnvoyerMessagesAsync();
-        Assert.Equal(1, (await MessagesPourAsync(locataire.Email)).Single().Tentatives);
+        Assert.Equal(1, (await MessagesPourAsync(locataire.Email)).Single(m => m.Id == echec.Id).Tentatives);
 
         // L'heure du nouvel essai arrive : le serveur est revenu, l'email part.
         await f.ModifierBaseAsync(async db =>
             (await db.MessagesSortants.SingleAsync(m => m.Id == echec.Id)).ProchaineTentative = DateTime.UtcNow.AddSeconds(-1));
         await f.EnvoyerMessagesAsync();
-        var envoye = (await MessagesPourAsync(locataire.Email)).Single();
+        var envoye = (await MessagesPourAsync(locataire.Email)).Single(m => m.Id == echec.Id);
         Assert.Equal(StatutMessageSortant.Envoye, envoye.Statut);
         Assert.Equal(2, envoye.Tentatives);
         Assert.Single(f.Smtp.EmailsPour(locataire.Email), e => e.Sujet.Contains("désactivé"));

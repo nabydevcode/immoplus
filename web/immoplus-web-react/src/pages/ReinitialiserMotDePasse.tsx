@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AlertCircle, ArrowLeft, Building2, CheckCircle2 } from "lucide-react";
 import { apiClient, ApiError } from "../api/client";
+import ChampMotDePasse from "../components/compte/ChampMotDePasse";
 
 const classeChamp =
   "w-full border border-gray-300 rounded-lg px-4 py-3 mt-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-immo-gold/40 focus:border-immo-gold transition-shadow";
@@ -93,9 +94,8 @@ export default function ReinitialiserMotDePasse() {
                   <label htmlFor="reinit-mot-de-passe" className="text-sm font-medium text-gray-700">
                     Nouveau mot de passe
                   </label>
-                  <input
+                  <ChampMotDePasse
                     id="reinit-mot-de-passe"
-                    type="password"
                     value={motDePasse}
                     onChange={(e) => setMotDePasse(e.target.value)}
                     autoComplete="new-password"
@@ -106,9 +106,8 @@ export default function ReinitialiserMotDePasse() {
                   <label htmlFor="reinit-confirmation" className="text-sm font-medium text-gray-700">
                     Confirmation
                   </label>
-                  <input
+                  <ChampMotDePasse
                     id="reinit-confirmation"
-                    type="password"
                     value={confirmation}
                     onChange={(e) => setConfirmation(e.target.value)}
                     autoComplete="new-password"

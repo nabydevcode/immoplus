@@ -27,7 +27,7 @@ public class MiddlewareException
         }
         catch (ConflictException ex)
         {
-            await EcrireErreur(context, StatusCodes.Status409Conflict, ex.Message);
+            await EcrireErreur(context, StatusCodes.Status409Conflict, ex.Message, ex.Code);
         }
         catch (TropDeTentativesException ex)
         {
@@ -92,7 +92,8 @@ public class MiddlewareException
         return false;
     }
 
-    public static async Task EcrireErreur(HttpContext context, int statusCode, string message)
+    /// <param name="code">Facultatif : { message, code } (le front teste le code, le message reste affichable tel quel).</param>
+    public static async Task EcrireErreur(HttpContext context, int statusCode, string message, string? code = null)
     {
         // Réponse déjà partie (fichier en cours d'envoi) : impossible de la remplacer par un message d'erreur.
         if (context.Response.HasStarted)
@@ -101,7 +102,7 @@ public class MiddlewareException
         }
         context.Response.ContentType = "application/json";
         context.Response.StatusCode = statusCode;
-        var reponse = JsonSerializer.Serialize(new { message });
+        var reponse = code is null ? JsonSerializer.Serialize(new { message }) : JsonSerializer.Serialize(new { message, code });
         await context.Response.WriteAsync(reponse);
     }
 }

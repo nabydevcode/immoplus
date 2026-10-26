@@ -1,5 +1,5 @@
-import { useState, type FormEvent } from "react";
-import { Ban, Check, RotateCcw, Search, ShieldPlus, X } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Ban, Check, MailCheck, MailWarning, RotateCcw, Search, ShieldPlus, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { apiClient } from "../../api/client";
 import { Badge, EnTete, EtatListe, MessageErreur, Onglets, Tableau } from "../../components/admin/ui";
@@ -14,6 +14,7 @@ import {
 } from "../../components/admin/outils";
 import { useAuth } from "../../context/auth";
 import CreationAdministrateur from "../../components/admin/CreationAdministrateur";
+import { useTempsReel } from "../../components/messages/tempsReel";
 import type { PagedResultDto, UtilisateurDto } from "../../types/models";
 
 const statuts = {
@@ -23,10 +24,15 @@ const statuts = {
   Desactive: { label: "Désactivé", ton: "neutre" },
 } as const;
 
-type Filtre = "EnAttente" | "Valide" | "Desactive" | "Tous";
+/** « EnAttente » = à valider (en attente ET email confirmé) ; « NonConfirme » = en attente, email non confirmé. */
+type Filtre = "EnAttente" | "NonConfirme" | "Valide" | "Desactive" | "Tous";
 type Action = "valider" | "refuser" | "desactiver" | "reactiver";
 
 const TAILLE_PAGE = 20;
+/** Durée de la surbrillance d'une ligne modifiée par un autre (inscription, confirmation, autre admin). */
+const DUREE_SURBRILLANCE = 2500;
+/** Plusieurs événements rapprochés : une seule relecture. */
+const DELAI_RELECTURE = 250;
 
 const pluriel = (n: number, mot: string) => `${n} ${mot}${n > 1 ? "s" : ""}`;
 
@@ -45,8 +51,16 @@ function bilanDesactivation(u: UtilisateurDto) {
     );
   return { texte: morceaux.join(" "), alerte: aVenir > 0 };
 }
-/** Nombre de comptes d'un statut (seul totalElements est lu). */
-const cheminCompte = (statut: UtilisateurDto["statut"]) => `utilisateur/lister?statut=${statut}&taille=1`;
+/** Filtres de l'API pour chaque onglet (statut et confirmation de l'adresse email). */
+function filtresOnglet(filtre: Filtre): Record<string, string> {
+  if (filtre === "EnAttente") return { statut: "EnAttente", emailConfirme: "true" };
+  if (filtre === "NonConfirme") return { statut: "EnAttente", emailConfirme: "false" };
+  if (filtre === "Tous") return {};
+  return { statut: filtre };
+}
+/** Nombre de comptes d'un onglet (seul totalElements est lu). */
+const cheminCompte = (filtre: Filtre) =>
+  `utilisateur/lister?${new URLSearchParams({ ...filtresOnglet(filtre), taille: "1" })}`;
 
 export default function Utilisateurs() {
   const { utilisateurId } = useAuth();
@@ -59,13 +73,13 @@ export default function Utilisateurs() {
   const [saisie, setSaisie] = useState(qInitial);
   const [recherche, setRecherche] = useState(qInitial);
 
-  const parametres = new URLSearchParams({ page: String(page), taille: String(TAILLE_PAGE) });
-  if (filtre !== "Tous") parametres.set("statut", filtre);
+  const parametres = new URLSearchParams({ ...filtresOnglet(filtre), page: String(page), taille: String(TAILLE_PAGE) });
   if (recherche) parametres.set("q", recherche);
   const { donnees, setDonnees, chargement, erreur, recharger } = useChargement<PagedResultDto<UtilisateurDto>>(
     `utilisateur/lister?${parametres}`,
   );
   const enAttente = useChargement<PagedResultDto<UtilisateurDto>>(cheminCompte("EnAttente"));
+  const nonConfirmes = useChargement<PagedResultDto<UtilisateurDto>>(cheminCompte("NonConfirme"));
   const valides = useChargement<PagedResultDto<UtilisateurDto>>(cheminCompte("Valide"));
   const desactives = useChargement<PagedResultDto<UtilisateurDto>>(cheminCompte("Desactive"));
   const tous = useChargement<PagedResultDto<UtilisateurDto>>("utilisateur/lister?taille=1");
@@ -80,8 +94,45 @@ export default function Utilisateurs() {
   // Compte rendu de la dernière action (création d'un admin, désactivation d'un hôte et ses réservations).
   const [information, setInformation] = useState<{ texte: string; alerte: boolean } | null>(null);
 
+  // Comptes modifiés en temps réel : ligne en surbrillance quelques secondes.
+  const [surbrillance, setSurbrillance] = useState<ReadonlySet<number>>(() => new Set());
+  const minuteries = useRef(new Map<number, number>());
+  const relecture = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    const enCours = minuteries.current;
+    return () => {
+      for (const m of enCours.values()) window.clearTimeout(m);
+      window.clearTimeout(relecture.current);
+    };
+  }, []);
+
+  // Inscription, confirmation d'email, action d'un autre admin… : onglet affiché et compteurs relus sans
+  // indicateur de chargement (la page et la recherche sont conservées).
+  useTempsReel("utilisateurChange", ({ utilisateurId: id }) => {
+    window.clearTimeout(relecture.current);
+    relecture.current = window.setTimeout(() => {
+      for (const c of [enAttente, nonConfirmes, valides, desactives, tous]) c.recharger();
+      recharger();
+    }, DELAI_RELECTURE);
+    window.clearTimeout(minuteries.current.get(id));
+    setSurbrillance((s) => new Set(s).add(id));
+    minuteries.current.set(
+      id,
+      window.setTimeout(() => {
+        minuteries.current.delete(id);
+        setSurbrillance((s) => {
+          const suite = new Set(s);
+          suite.delete(id);
+          return suite;
+        });
+      }, DUREE_SURBRILLANCE),
+    );
+  });
+
   const affiches = donnees?.donnees ?? [];
   const totalPages = donnees?.totalPages ?? 1;
+  // Dernière page vidée (comptes passés dans un autre onglet) : retour sur la nouvelle dernière page.
+  if (donnees && donnees.totalPages > 0 && page > donnees.totalPages) setPage(donnees.totalPages);
 
   const changerFiltre = (f: Filtre) => {
     setFiltre(f);
@@ -104,7 +155,7 @@ export default function Utilisateurs() {
       setMotif("");
       if (action === "desactiver") setInformation(bilanDesactivation(misAJour));
       // Le compte change d'onglet : compteurs et page rechargés.
-      for (const c of [enAttente, valides, desactives]) c.recharger();
+      for (const c of [enAttente, nonConfirmes, valides, desactives]) c.recharger();
       recharger();
     } catch (err) {
       setErreurAction(messageErreur(err, "L'action a échoué."));
@@ -166,6 +217,7 @@ export default function Utilisateurs() {
         onChange={changerFiltre}
         options={[
           { valeur: "EnAttente", label: `À valider${nombre(enAttente)}` },
+          { valeur: "NonConfirme", label: `Email non confirmé${nombre(nonConfirmes)}` },
           { valeur: "Valide", label: `Actifs${nombre(valides)}` },
           { valeur: "Desactive", label: `Désactivés${nombre(desactives)}` },
           { valeur: "Tous", label: `Tous${nombre(tous)}` },
@@ -198,15 +250,20 @@ export default function Utilisateurs() {
           recherche
             ? `Aucun utilisateur ne correspond à « ${recherche} ».`
             : filtre === "EnAttente"
-              ? "Aucune inscription en attente de validation."
-              : filtre === "Desactive"
-                ? "Aucun compte désactivé."
-                : "Aucun utilisateur."
+              ? "Aucune inscription à valider (email confirmé)."
+              : filtre === "NonConfirme"
+                ? "Aucune inscription en attente de confirmation de l'adresse email."
+                : filtre === "Desactive"
+                  ? "Aucun compte désactivé."
+                  : "Aucun utilisateur."
         }
       >
         <Tableau entetes={["Nom", "Email", "Téléphone", "Rôle", "Statut", ""]}>
           {affiches.map((u) => (
-            <tr key={u.id} className="border-b border-black/5 last:border-0 align-top">
+            <tr
+              key={u.id}
+              className={`border-b border-black/5 last:border-0 align-top transition-colors duration-700 ${surbrillance.has(u.id) ? "bg-amber-50" : ""}`}
+            >
               <td className="px-5 py-3 font-semibold whitespace-nowrap">{u.nom}</td>
               <td className="px-5 py-3 text-gray-600">{u.email}</td>
               <td className="px-5 py-3 text-gray-600 whitespace-nowrap">{u.telephone}</td>
@@ -214,7 +271,25 @@ export default function Utilisateurs() {
                 <Badge ton="neutre">{u.role}</Badge>
               </td>
               <td className="px-5 py-3">
-                <Badge ton={statuts[u.statut].ton}>{statuts[u.statut].label}</Badge>
+                <div className="flex flex-col items-start gap-1">
+                  <Badge ton={statuts[u.statut].ton}>{statuts[u.statut].label}</Badge>
+                  {u.emailConfirme ? (
+                    <span
+                      className="inline-flex items-center gap-1 text-xs text-green-700 whitespace-nowrap"
+                      title={
+                        u.dateConfirmationEmail ? `Confirmé le ${formaterDate(u.dateConfirmationEmail)}` : undefined
+                      }
+                    >
+                      <MailCheck size={13} aria-hidden="true" />
+                      Email confirmé
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-xs text-amber-700 whitespace-nowrap">
+                      <MailWarning size={13} aria-hidden="true" />
+                      Email non confirmé
+                    </span>
+                  )}
+                </div>
                 {u.statut === "Desactive" && (
                   <p className="text-xs text-gray-500 mt-1 max-w-56">
                     Depuis le {formaterDate(u.dateDesactivation)}
@@ -226,14 +301,20 @@ export default function Utilisateurs() {
                 <div className="flex gap-2 justify-end flex-wrap">
                   {u.statut === "EnAttente" && (
                     <>
-                      <button
-                        onClick={() => changerStatut(u.id, "valider")}
-                        disabled={actionEnCours === u.id}
-                        className={classeBoutonPrincipal(true)}
-                      >
-                        <Check size={14} />
-                        Valider
-                      </button>
+                      {u.emailConfirme ? (
+                        <button
+                          onClick={() => changerStatut(u.id, "valider")}
+                          disabled={actionEnCours === u.id}
+                          className={classeBoutonPrincipal(true)}
+                        >
+                          <Check size={14} />
+                          Valider
+                        </button>
+                      ) : (
+                        <span className="text-xs text-gray-500 self-center max-w-44">
+                          Validation possible après la confirmation de l'email.
+                        </span>
+                      )}
                       <button
                         onClick={() => changerStatut(u.id, "refuser")}
                         disabled={actionEnCours === u.id}
@@ -284,7 +365,7 @@ export default function Utilisateurs() {
                         Désactiver
                       </button>
                     ))}
-                  {u.statut === "Refuse" && (
+                  {u.statut === "Refuse" && u.emailConfirme && (
                     <button
                       onClick={() => changerStatut(u.id, "valider")}
                       disabled={actionEnCours === u.id}

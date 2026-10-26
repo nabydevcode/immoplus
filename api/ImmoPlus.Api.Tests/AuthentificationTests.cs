@@ -8,7 +8,7 @@ using ImmoPlus.Api.Tests.Outils;
 public class AuthentificationTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFactory>
 {
     [Fact]
-    public async Task Inscription_compte_en_attente_puis_connexion_apres_validation()
+    public async Task Inscription_compte_en_attente_puis_connexion_apres_confirmation_et_validation()
     {
         var admin = await f.AdminAsync();
         var email = Donnees.NouvelEmail("locataire");
@@ -20,6 +20,11 @@ public class AuthentificationTests(ImmoPlusFactory f) : IClassFixture<ImmoPlusFa
         }).Attendre<UtilisateurResponseDto>(HttpStatusCode.Created);
         Assert.Equal("EnAttente", cree.Statut);
         Assert.Null(cree.Token);
+
+        var nonConfirme = await anonyme.PostJson("/utilisateur/connexion", new { email, motDePasse = Api.MotDePasse })
+            .Erreur(HttpStatusCode.Conflict);
+        Assert.Contains("Confirmez d'abord votre adresse email", nonConfirme);
+        await anonyme.PostJson("/utilisateur/confirmer-email", new { jeton = await f.JetonConfirmationAsync(email) }).Verifier(HttpStatusCode.OK);
 
         var attente = await anonyme.PostJson("/utilisateur/connexion", new { email, motDePasse = Api.MotDePasse })
             .Erreur(HttpStatusCode.Conflict);

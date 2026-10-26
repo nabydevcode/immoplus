@@ -6,6 +6,7 @@ import { MessageErreur } from "../admin/ui";
 import { classeBoutonPrincipal, classeChamp, messageErreur, useChargement } from "../admin/outils";
 import type { ProfilDto } from "../../types/models";
 import VerificationIdentite from "../identite/VerificationIdentite";
+import ChampMotDePasse from "../compte/ChampMotDePasse";
 
 const libellesRole: Record<string, string> = {
   Admin: "Administrateur",
@@ -192,9 +193,8 @@ function FormulaireMotDePasse() {
     <form onSubmit={changer} className="flex flex-col gap-4">
       <label className="text-sm font-medium text-gray-700">
         Mot de passe actuel
-        <input
+        <ChampMotDePasse
           className={classeChamp}
-          type="password"
           value={actuel}
           onChange={(e) => saisir(setActuel)(e.target.value)}
           autoComplete="current-password"
@@ -202,9 +202,8 @@ function FormulaireMotDePasse() {
       </label>
       <label className="text-sm font-medium text-gray-700">
         Nouveau mot de passe
-        <input
+        <ChampMotDePasse
           className={classeChamp}
-          type="password"
           value={nouveau}
           onChange={(e) => saisir(setNouveau)(e.target.value)}
           autoComplete="new-password"
@@ -213,9 +212,8 @@ function FormulaireMotDePasse() {
       </label>
       <label className="text-sm font-medium text-gray-700">
         Confirmer le nouveau mot de passe
-        <input
+        <ChampMotDePasse
           className={classeChamp}
-          type="password"
           value={confirmation}
           onChange={(e) => saisir(setConfirmation)(e.target.value)}
           autoComplete="new-password"

@@ -1,7 +1,20 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { AlertCircle, ArrowLeft, Building2, CheckCircle2, Clock, Home, KeyRound, UserCheck } from "lucide-react";
+import {
+  AlertCircle,
+  ArrowLeft,
+  Building2,
+  CheckCircle2,
+  Clock,
+  Home,
+  KeyRound,
+  MailCheck,
+  UserCheck,
+} from "lucide-react";
 import { apiClient, ApiError } from "../api/client";
+import RenvoiConfirmation from "../components/compte/RenvoiConfirmation";
+import { concerneAdresse, ecouterCompte } from "../components/compte/diffusion";
+import ChampMotDePasse from "../components/compte/ChampMotDePasse";
 
 type Role = "Locataire" | "Bailleur";
 
@@ -23,6 +36,16 @@ export default function Inscription() {
   const [messageErreur, setMessageErreur] = useState<string | null>(null);
   const [enCours, setEnCours] = useState(false);
   const [inscrit, setInscrit] = useState(false);
+  // Lien de confirmation ouvert dans un autre onglet : statut du compte renvoyé par l'API (EnAttente, Valide…).
+  const [confirme, setConfirme] = useState<{ statut?: string } | null>(null);
+  const emailInscrit = inscrit ? email.trim() : "";
+
+  useEffect(() => {
+    if (!emailInscrit) return;
+    return ecouterCompte((m) => {
+      if (concerneAdresse(m, emailInscrit)) setConfirme({ statut: m.statut });
+    });
+  }, [emailInscrit]);
 
   const sInscrire = async (e: FormEvent) => {
     e.preventDefault();
@@ -106,26 +129,54 @@ export default function Inscription() {
               <div>
                 <p className="font-semibold text-sm">Validation rapide</p>
                 <p className="text-gray-500 text-sm">
-                  Chaque compte est vérifié par un administrateur avant la première connexion.
+                  Confirmez votre adresse email, puis un administrateur vérifie votre compte avant la première
+                  connexion.
                 </p>
               </div>
             </div>
           </div>
 
           <div className="p-6 sm:p-10 md:w-1/2 flex flex-col justify-center bg-white">
-            {inscrit ? (
-              <div className="flex flex-col items-center text-center gap-4">
-                <span className="flex items-center justify-center w-14 h-14 rounded-full bg-green-50 text-green-600">
+            {inscrit && confirme ? (
+              <div role="status" className="flex flex-col items-center text-center gap-4">
+                <span className="flex items-center justify-center w-14 h-14 rounded-full bg-green-100 text-green-700">
                   <CheckCircle2 size={28} />
                 </span>
-                <h2 className="text-2xl font-extrabold">Inscription envoyée</h2>
+                <h2 className="text-2xl font-extrabold">Adresse confirmée</h2>
+                <p className="text-gray-600 text-sm">
+                  L'adresse <span className="font-semibold text-gray-800 break-all">{emailInscrit}</span> est confirmée.
+                </p>
                 <p className="text-gray-500 text-sm">
-                  Votre compte a bien été créé. Il doit être validé par un administrateur avant que vous puissiez vous
-                  connecter.
+                  {confirme.statut === "Valide"
+                    ? "Votre compte est validé : vous pouvez vous connecter."
+                    : "Votre compte doit maintenant être validé par un administrateur ; vous recevrez un email dès qu'il le sera."}
                 </p>
                 <Link
                   to="/login"
-                  className="block w-full text-center bg-immo-gold text-immo-dark font-semibold py-3 rounded-lg hover:bg-immo-gold-light transition-colors mt-2"
+                  className="block w-full text-center bg-immo-gold text-immo-dark font-semibold py-3 rounded-lg hover:bg-immo-gold-light transition-colors"
+                >
+                  Aller à la connexion
+                </Link>
+              </div>
+            ) : inscrit ? (
+              <div className="flex flex-col items-center text-center gap-4">
+                <span className="flex items-center justify-center w-14 h-14 rounded-full bg-immo-gold/15 text-immo-gold">
+                  <MailCheck size={28} />
+                </span>
+                <h2 className="text-2xl font-extrabold">Vérifiez votre boîte email</h2>
+                <p className="text-gray-600 text-sm">
+                  Un email de confirmation vient d'être envoyé à{" "}
+                  <span className="font-semibold text-gray-800 break-all">{email.trim()}</span>. Cliquez sur le lien
+                  qu'il contient pour confirmer votre adresse (lien valable 48 heures).
+                </p>
+                <p className="text-gray-500 text-sm">
+                  Votre compte sera ensuite validé par un administrateur ; vous serez prévenu par email. Vous ne trouvez
+                  pas l'email ? Pensez à regarder dans vos courriers indésirables (spams).
+                </p>
+                <RenvoiConfirmation email={email} />
+                <Link
+                  to="/login"
+                  className="block w-full text-center bg-immo-gold text-immo-dark font-semibold py-3 rounded-lg hover:bg-immo-gold-light transition-colors"
                 >
                   Aller à la connexion
                 </Link>
@@ -210,9 +261,8 @@ export default function Inscription() {
                       <label htmlFor="inscription-mot-de-passe" className="text-sm font-medium text-gray-700">
                         Mot de passe
                       </label>
-                      <input
+                      <ChampMotDePasse
                         id="inscription-mot-de-passe"
-                        type="password"
                         value={motDePasse}
                         onChange={(e) => setMotDePasse(e.target.value)}
                         autoComplete="new-password"
@@ -223,9 +273,8 @@ export default function Inscription() {
                       <label htmlFor="inscription-confirmation" className="text-sm font-medium text-gray-700">
                         Confirmation
                       </label>
-                      <input
+                      <ChampMotDePasse
                         id="inscription-confirmation"
-                        type="password"
                         value={confirmation}
                         onChange={(e) => setConfirmation(e.target.value)}
                         autoComplete="new-password"

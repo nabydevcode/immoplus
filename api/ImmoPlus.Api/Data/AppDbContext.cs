@@ -438,6 +438,9 @@ public class AppDbContext : DbContext
             .HasFilter("NOT \"EstDesactive\"");
         modelBuilder.Entity<Appartement>().HasIndex(a => new { a.Latitude, a.Longitude }).HasDatabaseName("IX_Appartements_Position");
         modelBuilder.Entity<Utilisateur>().HasIndex(u => new { u.Role, u.Statut }).HasDatabaseName("IX_Utilisateurs_Role_Statut");
+        // Lien de confirmation d'email : recherche du compte par le hash du jeton (seuls les comptes concernés sont indexés).
+        modelBuilder.Entity<Utilisateur>().HasIndex(u => u.JetonConfirmationEmailHash).IsUnique()
+            .HasFilter("\"JetonConfirmationEmailHash\" IS NOT NULL").HasDatabaseName("IX_Utilisateurs_JetonConfirmationEmailHash");
 
         // --- Précision des montants : numeric(18,2) en GNF ---
         modelBuilder.Entity<Appartement>().Property(a => a.LoyerMensuel).HasPrecision(18, 2);

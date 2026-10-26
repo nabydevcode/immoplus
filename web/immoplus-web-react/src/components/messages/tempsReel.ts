@@ -8,6 +8,13 @@ export interface EvenementsTempsReel {
   nouveauMessage: MessageDto;
   messagesLus: { reservationId: number; lecteurId: number; dateLecture: string };
   ecrit: { reservationId: number; auteurId: number };
+  /** Compte créé ou modifié (groupe « admins » uniquement) : listes et compteurs des utilisateurs à relire. */
+  utilisateurChange: {
+    utilisateurId: number;
+    type: "inscrit" | "emailConfirme" | "valide" | "refuse" | "desactive" | "reactive" | "adminCree" | "profilModifie";
+    statut: string;
+    emailConfirme: boolean;
+  };
 }
 
 // Une seule connexion WebSocket partagée par toute l'application, ouverte à la première écoute.

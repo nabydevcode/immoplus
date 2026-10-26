@@ -1,7 +1,9 @@
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { AlertCircle, ArrowLeft, Building2, ShieldCheck, Wallet } from "lucide-react";
+import { AlertCircle, ArrowLeft, Building2, MailWarning, ShieldCheck, Wallet } from "lucide-react";
 import { useAuth } from "../context/auth";
+import RenvoiConfirmation from "../components/compte/RenvoiConfirmation";
+import ChampMotDePasse from "../components/compte/ChampMotDePasse";
 
 export default function Login() {
   const { connexion } = useAuth();
@@ -22,15 +24,20 @@ export default function Login() {
         : null,
   );
   const [enCours, setEnCours] = useState(false);
+  // Adresse email pas encore confirmée (code « EmailNonConfirme ») : message dédié et renvoi du lien.
+  const [emailNonConfirme, setEmailNonConfirme] = useState<string | null>(null);
 
   const seConnecter = async (e: FormEvent) => {
     e.preventDefault();
     setMessageErreur(null);
+    setEmailNonConfirme(null);
     setEnCours(true);
-    const { succes, erreur, role } = await connexion(email, motDePasse);
+    const { succes, erreur, role, code } = await connexion(email, motDePasse);
     setEnCours(false);
     if (succes) {
       navigate(role === "Admin" ? "/admin" : (retour ?? "/"));
+    } else if (code === "EmailNonConfirme") {
+      setEmailNonConfirme(erreur ?? "Confirmez d'abord votre adresse email : un lien vous a été envoyé.");
     } else {
       setMessageErreur(erreur ?? "Email ou mot de passe incorrect.");
     }
@@ -114,9 +121,8 @@ export default function Login() {
                     Mot de passe oublié ?
                   </Link>
                 </div>
-                <input
+                <ChampMotDePasse
                   id="login-mot-de-passe"
-                  type="password"
                   autoComplete="current-password"
                   required
                   value={motDePasse}
@@ -133,6 +139,18 @@ export default function Login() {
                 {enCours ? "Connexion..." : "Se connecter"}
               </button>
             </form>
+
+            {emailNonConfirme && (
+              <div role="alert" className="flex flex-col gap-3 rounded-lg bg-amber-50 px-4 py-3 mt-4">
+                <p className="flex items-start gap-2 text-amber-900 text-sm">
+                  <MailWarning size={16} className="shrink-0 mt-0.5" />
+                  <span>
+                    {emailNonConfirme} Pensez à vérifier vos courriers indésirables ; le lien est valable 48 heures.
+                  </span>
+                </p>
+                <RenvoiConfirmation email={email} libelle="Renvoyer l'email de confirmation" />
+              </div>
+            )}
 
             {messageErreur && (
               <p className="flex items-center gap-2 text-red-600 text-sm mt-4">

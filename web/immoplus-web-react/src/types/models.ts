@@ -211,6 +211,9 @@ export interface UtilisateurDto {
   /** Pièce d'identité validée par un admin (badge « Identité vérifiée »). */
   identiteVerifiee?: boolean;
   dateVerificationIdentite?: string | null;
+  /** Adresse email confirmée par le lien reçu à l'inscription (condition de la validation par un admin). */
+  emailConfirme: boolean;
+  dateConfirmationEmail?: string | null;
 }
 
 export interface PagedResultDto<T> {

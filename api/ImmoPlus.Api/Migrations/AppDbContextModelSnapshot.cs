@@ -1290,6 +1290,9 @@ namespace ImmoPlus.Api.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<DateTime?>("DateConfirmationEmail")
+                        .HasColumnType("timestamp without time zone");
+
                     b.Property<DateTime?>("DateCreation")
                         .HasColumnType("timestamp without time zone");
 
@@ -1306,8 +1309,17 @@ namespace ImmoPlus.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<bool>("EmailConfirme")
+                        .HasColumnType("boolean");
+
                     b.Property<bool>("IdentiteVerifiee")
                         .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("JetonConfirmationEmailExpiration")
+                        .HasColumnType("timestamp without time zone");
+
+                    b.Property<string>("JetonConfirmationEmailHash")
+                        .HasColumnType("text");
 
                     b.Property<DateTime?>("JetonReinitialisationExpiration")
                         .HasColumnType("timestamp without time zone");
@@ -1340,6 +1352,11 @@ namespace ImmoPlus.Api.Migrations
                         .HasColumnType("text");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("JetonConfirmationEmailHash")
+                        .IsUnique()
+                        .HasDatabaseName("IX_Utilisateurs_JetonConfirmationEmailHash")
+                        .HasFilter("\"JetonConfirmationEmailHash\" IS NOT NULL");
 
                     b.HasIndex("Role", "Statut")
                         .HasDatabaseName("IX_Utilisateurs_Role_Statut");

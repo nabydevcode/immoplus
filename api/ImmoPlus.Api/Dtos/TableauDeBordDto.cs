@@ -3,7 +3,10 @@ namespace ImmoPlus.Api.Dtos;
 /// <summary>Tableau de bord de l'admin : compteurs et actions en attente.</summary>
 public class TableauDeBordDto
 {
+    /// <summary>Comptes en attente dont l'email est confirmé (onglet « À valider »).</summary>
     public int UtilisateursAValider { get; set; }
+    /// <summary>Comptes en attente qui n'ont pas encore confirmé leur adresse email (non validables).</summary>
+    public int UtilisateursEmailNonConfirme { get; set; }
     public int CandidaturesAEtudier { get; set; }
     public int VisitesAVenir { get; set; }
     public int Logements { get; set; }

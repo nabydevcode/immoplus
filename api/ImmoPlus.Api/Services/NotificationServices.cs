@@ -40,9 +40,74 @@ public class NotificationServices
     private static string MontantSms(decimal? montant) =>
         montant is null ? "-" : $"{montant.Value.ToString("N0", Fr).Replace('\u202F', ' ').Replace('\u00A0', ' ')} GNF";
 
-    /// <summary>Compte validé par un administrateur : SMS seulement (aucun email n'existe pour cette étape).</summary>
-    public Task CompteValideAsync(Utilisateur utilisateur) =>
-        Sms(utilisateur, "compte-valide", "votre compte est validé, vous pouvez vous connecter.");
+    // --- Inscription : confirmation de l'adresse email, puis validation du compte par un administrateur ---
+
+    /// <param name="cheminConfirmation">« /confirmer-email?jeton=… » (jeton en clair : seul son hash est en base).</param>
+    public Task<bool> ConfirmationEmailAsync(Utilisateur utilisateur, string cheminConfirmation)
+    {
+        var lien = $"{_liens.Url}{cheminConfirmation}";
+        return EnvoyerAsync(utilisateur, (ReferenceEmail?)null, "Confirmez votre adresse email",
+            "Confirmez votre adresse email",
+            $"""
+            <p>Merci pour votre inscription sur ImmoPlus en tant que <strong>{H(LibelleRole(utilisateur.Role))}</strong>.</p>
+            <p>Pour activer votre compte, confirmez d'abord que cette adresse ({H(utilisateur.Email)}) est bien la vôtre :</p>
+            <p style="margin:20px 0"><a href="{lien}" style="display:inline-block;background:#d4a94a;color:#15161a;text-decoration:none;font-weight:bold;padding:12px 20px;border-radius:8px">Confirmer mon adresse email</a></p>
+            <p style="font-size:13px;color:#6b7280">Si le bouton ne fonctionne pas, copiez ce lien dans votre navigateur :<br><span style="word-break:break-all">{lien}</span></p>
+            <p>Ce lien est valable {DureeConfirmationHeures} heures. Si vous n'êtes pas à l'origine de cette inscription, ignorez cet email.</p>
+            """,
+            "Une fois votre adresse confirmée, un administrateur ImmoPlus validera votre compte. Vous recevrez un email dès qu'il sera validé, et pourrez alors vous connecter.",
+            cheminConfirmation);
+    }
+
+    /// <summary>Durée de validité du lien de confirmation (affichée dans l'email).</summary>
+    public const int DureeConfirmationHeures = 48;
+
+    /// <summary>Adresse confirmée : chaque admin actif est prévenu qu'un compte attend sa validation.</summary>
+    public async Task<bool> NouveauCompteAValiderAsync(Utilisateur admin, Utilisateur compte)
+    {
+        var role = LibelleRole(compte.Role);
+        var envoye = await EnvoyerAsync(admin, (ReferenceEmail?)null, $"Nouveau compte à valider : {compte.Nom} ({role})",
+            "Nouveau compte à valider",
+            $"""
+            <p>Un nouvel utilisateur a confirmé son adresse email et attend la validation de son compte.</p>
+            {Tableau(("Nom", H(compte.Nom)), ("Rôle", H(role)), ("Email", H(compte.Email)), ("Téléphone", H(compte.Telephone)),
+                ("Inscrit le", Date(compte.DateCreation)))}
+            """,
+            "Dans l'espace admin, rubrique « Utilisateurs », onglet « À valider » : vérifiez le compte puis validez-le ou refusez-le.",
+            $"/admin/utilisateurs?q={Uri.EscapeDataString(compte.Email)}");
+        await Sms(admin, "compte-a-valider", $"nouveau compte à valider : {compte.Nom} ({role}).");
+        return envoye;
+    }
+
+    /// <summary>Compte validé par un administrateur : email (lien de connexion) et SMS.</summary>
+    public async Task<bool> CompteValideAsync(Utilisateur utilisateur)
+    {
+        var envoye = await EnvoyerAsync(utilisateur, (ReferenceEmail?)null, "Votre compte ImmoPlus est validé",
+            "Compte validé",
+            $"""
+            <p>Bonne nouvelle : votre compte ImmoPlus <strong>{H(LibelleRole(utilisateur.Role))}</strong> ({H(utilisateur.Email)}) a été validé par un administrateur.</p>
+            """,
+            "Vous pouvez dès maintenant vous connecter avec votre email et votre mot de passe.",
+            "/login");
+        await Sms(utilisateur, "compte-valide", "votre compte est validé, vous pouvez vous connecter.");
+        return envoye;
+    }
+
+    public Task<bool> InscriptionRefuseeAsync(Utilisateur utilisateur) =>
+        EnvoyerAsync(utilisateur, (ReferenceEmail?)null, "Votre inscription n'a pas été retenue",
+            "Inscription non retenue",
+            $"""
+            <p>Après examen par un administrateur, votre inscription sur ImmoPlus ({H(utilisateur.Email)}) n'a pas été retenue.</p>
+            <p>Vous ne pouvez pas vous connecter avec ce compte.</p>
+            """,
+            "Si vous pensez qu'il s'agit d'une erreur, contactez ImmoPlus en précisant l'adresse email utilisée à l'inscription.");
+
+    private static string LibelleRole(RoleUtilisateur role) => role switch
+    {
+        RoleUtilisateur.Locataire => "Locataire",
+        RoleUtilisateur.Bailleur => "Bailleur",
+        _ => "Administrateur"
+    };
 
     // 1. Dépôt du dossier
     public Task DossierDeposeAsync(Utilisateur locataire, Candidature candidature, Appartement appartement) =>

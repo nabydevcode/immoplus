@@ -28,7 +28,9 @@ public class TableauDeBordServices
 
         var dto = new TableauDeBordDto
         {
-            UtilisateursAValider = await _context.Utilisateurs.CountAsync(u => u.Statut == StatutUtilisateur.EnAttente),
+            // Validables seulement : l'adresse email doit être confirmée (les autres sont comptés à part).
+            UtilisateursAValider = await _context.Utilisateurs.CountAsync(u => u.Statut == StatutUtilisateur.EnAttente && u.EmailConfirme),
+            UtilisateursEmailNonConfirme = await _context.Utilisateurs.CountAsync(u => u.Statut == StatutUtilisateur.EnAttente && !u.EmailConfirme),
             CandidaturesAEtudier = await _context.Candidatures.CountAsync(c => c.Statut == StatutCandidature.EnAttente),
             VisitesAVenir = await _context.Visites.CountAsync(v =>
                 (v.Statut == StatutVisite.Proposee || v.Statut == StatutVisite.Confirmee || v.Statut == StatutVisite.Indisponible)

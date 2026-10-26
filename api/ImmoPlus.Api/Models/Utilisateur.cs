@@ -18,6 +18,19 @@ public class Utilisateur
     public string? JetonReinitialisationHash { get; set; }
     public DateTime? JetonReinitialisationExpiration { get; set; }
 
+    /// <summary>
+    /// Adresse email confirmée par le lien reçu à l'inscription : condition pour que l'admin valide le compte.
+    /// Comptes antérieurs à la confirmation, admins créés par un admin et amorçage : true d'office.
+    /// </summary>
+    public bool EmailConfirme { get; set; }
+    public DateTime? DateConfirmationEmail { get; set; }
+    /// <summary>
+    /// Hash SHA-256 du jeton envoyé par email. Conservé après usage (expiration effacée) : un second clic sur le lien
+    /// répond « déjà confirmée » au lieu d'une erreur, sans autre effet ; un renvoi le remplace.
+    /// </summary>
+    public string? JetonConfirmationEmailHash { get; set; }
+    public DateTime? JetonConfirmationEmailExpiration { get; set; }
+
     /// <summary>Admin : date du dernier récapitulatif des retards reçu (au plus un par jour).</summary>
     public DateTime? DateDernierRecapRetards { get; set; }
     public string? MotifDesactivation { get; set; }
